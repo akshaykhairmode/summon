@@ -13,7 +13,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"time"
 )
 
 type summon struct {
@@ -156,7 +155,7 @@ func (sum *summon) combineChunks() error {
 	} else {
 		currDir, err := os.Getwd()
 		if err != nil {
-			return err
+			return fmt.Errorf("Error while getting pwd : %v", err)
 		}
 		fname = currDir + "/" + filepath.Base(sum.uri)
 	}
@@ -165,7 +164,7 @@ func (sum *summon) combineChunks() error {
 	defer out.Close()
 
 	if err != nil {
-		return err
+		return fmt.Errorf("Error while creating file : %v", err)
 	}
 
 	buf := bytes.NewBuffer(nil)
@@ -176,7 +175,7 @@ func (sum *summon) combineChunks() error {
 
 	l, err := buf.WriteTo(out)
 	if err != nil {
-		return err
+		return fmt.Errorf("Error while writing to file : %v", err)
 	}
 
 	log.Printf("Wrote to File : %v, len : %v", fname, l)
@@ -202,7 +201,6 @@ func (sum *summon) downloadFileForRange(wg *sync.WaitGroup, u, r string, index i
 	}
 
 	sc, _, data, err := doAPICall(request)
-
 	if err != nil {
 		sum.err = err
 		return
@@ -227,23 +225,22 @@ func getRangeDetails(u string) (bool, int, error) {
 
 	request, err := http.NewRequest("HEAD", u, strings.NewReader(""))
 	if err != nil {
-		return false, 0, err
+		return false, 0, fmt.Errorf("Error while creating request : %v", err)
 	}
 
 	sc, headers, _, err := doAPICall(request)
-
 	if err != nil {
-		return false, 0, err
+		return false, 0, fmt.Errorf("Error calling url : %v", err)
 	}
 
 	if sc != 200 && sc != 206 {
-		return false, 0, err
+		return false, 0, fmt.Errorf("Did not get 200 or 206 response")
 	}
 
 	conLen := headers.Get("Content-Length")
 	cl, err := strconv.Atoi(conLen)
 	if err != nil {
-		return false, 0, err
+		return false, 0, fmt.Errorf("Error Parsing content length : %v", err)
 	}
 
 	//Accept-Ranges: bytes
@@ -259,18 +256,18 @@ func getRangeDetails(u string) (bool, int, error) {
 func doAPICall(request *http.Request) (int, http.Header, []byte, error) {
 
 	client := http.Client{
-		Timeout: 5 * time.Second,
+		Timeout: 0,
 	}
 
 	response, err := client.Do(request)
 	if err != nil {
-		return 0, http.Header{}, []byte{}, err
+		return 0, http.Header{}, []byte{}, fmt.Errorf("Error while doing request : %v", err)
 	}
 	defer response.Body.Close()
 
 	data, err := ioutil.ReadAll(response.Body)
 	if err != nil {
-		return 0, http.Header{}, []byte{}, err
+		return 0, http.Header{}, []byte{}, fmt.Errorf("Error while reading response body : %v", err)
 	}
 
 	return response.StatusCode, response.Header, data, nil
