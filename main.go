@@ -55,7 +55,7 @@ func NewSummon() (*summon, error) {
 
 	if *h {
 		flag.PrintDefaults()
-		fmt.Println("Example Usage - $GOBIN/summon -c 5 http://www.africau.edu/images/default/sample.pdf")
+		fmt.Println("\nExample Usage - $GOBIN/summon -c 5 http://www.africau.edu/images/default/sample.pdf")
 		return nil, nil
 	}
 
