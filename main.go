@@ -16,43 +16,110 @@ import (
 	"time"
 )
 
-var c int
-var mx = &sync.Mutex{}
-var chunk [][]byte
+type summon struct {
+	concurrency int
+	uri         string
+	chunks      map[int][]byte
+	err         error
+	opath       string
+	*sync.Mutex
+}
+
+func init() {
+	log.SetOutput(os.Stdout)
+	flag.CommandLine.SetOutput(os.Stdout)
+}
 
 func main() {
 
-	flag.IntVar(&c, "c", 0, "")
-	flag.Parse()
-
-	if len(flag.Args()) <= 0 {
-		log.Fatalln("URL is empty")
-	}
-
-	u := flag.Args()[0]
-
-	uri, err := url.ParseRequestURI(u)
+	sum, err := NewGodown()
 	if err != nil {
-		log.Fatalln("Invaid URL")
+		log.Fatalf("ERROR : %s", err)
 	}
 
-	if c <= 0 {
-		c = 1
-	}
-
-	chunk = make([][]byte, c+1)
-
-	isSupported, contentLength := getRangeDetails(u)
-	// log.Printf("Content Length is : %v , range support : %v", contentLength, isSupported)
-
-	if !isSupported || c <= 1 {
-		chunk[0] = make([]byte, 0)
-		downloadFileForRange(nil, u, "", 0)
-		final(uri)
+	if sum == nil {
 		return
 	}
 
-	split := contentLength / c
+	if err := sum.run(); err != nil {
+		log.Fatalf("ERROR : %s", err)
+	}
+
+}
+
+func NewGodown() (*summon, error) {
+
+	c := flag.Int("c", 0, "number of concurrent connections")
+	h := flag.Bool("h", false, "displays available flags")
+	o := flag.String("o", "", "output path of downloaded file, default is same directory.")
+	flag.Parse()
+
+	if *h {
+		flag.PrintDefaults()
+		fmt.Println("Example Usage - $GOBIN/summon -c 5 http://www.africau.edu/images/default/sample.pdf")
+		return nil, nil
+	}
+
+	if *c <= 0 {
+		*c = 1
+	}
+
+	if len(flag.Args()) <= 0 {
+		return nil, fmt.Errorf("Please pass file url")
+	}
+
+	u := flag.Args()[0]
+	uri, err := url.ParseRequestURI(u)
+	if err != nil {
+		return nil, fmt.Errorf("Passed URL is invalid")
+	}
+
+	sum := new(summon)
+	sum.concurrency = *c
+	sum.uri = uri.String()
+	sum.chunks = make(map[int][]byte)
+	sum.Mutex = &sync.Mutex{}
+
+	if *o != "" {
+		sum.opath = *o
+	}
+
+	return sum, nil
+
+}
+
+func (sum *summon) run() error {
+
+	isSupported, contentLength, err := getRangeDetails(sum.uri)
+
+	if err != nil {
+		return err
+	}
+
+	if !isSupported || sum.concurrency <= 1 {
+		return sum.processSingle()
+	}
+
+	return sum.processMultiple(contentLength)
+
+}
+
+func (sum *summon) processSingle() error {
+
+	//Initialize first index with []byte
+	sum.chunks[0] = make([]byte, 0)
+	sum.downloadFileForRange(nil, sum.uri, "", 0)
+
+	if sum.err != nil {
+		return sum.err
+	}
+
+	return sum.combineChunks()
+}
+
+func (sum *summon) processMultiple(contentLength int) error {
+
+	split := contentLength / sum.concurrency
 
 	wg := &sync.WaitGroup{}
 	index := 0
@@ -62,45 +129,63 @@ func main() {
 		if j > contentLength {
 			j = contentLength
 		}
-		chunk[index] = make([]byte, 0)
+
+		//Initialize for each index or application will panic
+		sum.chunks[index] = make([]byte, 0)
 		wg.Add(1)
-		go downloadFileForRange(wg, u, strconv.Itoa(i)+"-"+strconv.Itoa(j), index)
+		go sum.downloadFileForRange(wg, sum.uri, strconv.Itoa(i)+"-"+strconv.Itoa(j), index)
 		index++
 	}
 
 	wg.Wait()
-	final(uri)
 
+	if sum.err != nil {
+		return sum.err
+	}
+
+	return sum.combineChunks()
 }
 
-func final(uri *url.URL) {
+//combineChunks will combine the chunks in ordered fashion starting from 1
+func (sum *summon) combineChunks() error {
 
-	filename := filepath.Base(uri.String())
+	var fname string
 
-	fname := fmt.Sprintf("%v-%v", time.Now().Unix(), filename)
+	if sum.opath != "" {
+		fname = sum.opath
+	} else {
+		currDir, err := os.Getwd()
+		if err != nil {
+			return err
+		}
+		fname = currDir + "/" + filepath.Base(sum.uri)
+	}
 
 	out, err := os.Create(fname)
 	defer out.Close()
 
 	if err != nil {
-		log.Fatal(err)
+		return err
 	}
 
 	buf := bytes.NewBuffer(nil)
-	for _, v := range chunk {
-		buf.Write(v)
+	//Not using for range because it does not gurantee ordered iteration
+	for i := 0; i < len(sum.chunks); i++ {
+		buf.Write(sum.chunks[i])
 	}
 
 	l, err := buf.WriteTo(out)
 	if err != nil {
-		log.Fatal(err)
+		return err
 	}
 
 	log.Printf("Wrote to File : %v, len : %v", fname, l)
 
+	return nil
 }
 
-func downloadFileForRange(wg *sync.WaitGroup, u, r string, index int) {
+//downloadFileForRange will download the file for the provided range and set the bytes to the chunk map, will set summor.error field if error occurs
+func (sum *summon) downloadFileForRange(wg *sync.WaitGroup, u, r string, index int) {
 
 	if wg != nil {
 		defer wg.Done()
@@ -108,53 +193,70 @@ func downloadFileForRange(wg *sync.WaitGroup, u, r string, index int) {
 
 	request, err := http.NewRequest("GET", u, strings.NewReader(""))
 	if err != nil {
-		log.Fatalln(err)
+		sum.err = err
+		return
 	}
 
 	if r != "" {
 		request.Header.Add("Range", "bytes="+r)
 	}
 
-	sc, _, data := doAPICall(request)
+	sc, _, data, err := doAPICall(request)
 
-	if sc != 200 && sc != 206 {
-		log.Fatalf("Did not get 20X status code, got : %v", sc)
+	if err != nil {
+		sum.err = err
+		return
 	}
 
-	mx.Lock()
-	chunk[index] = append(chunk[index], data...)
-	mx.Unlock()
+	//206 = Partial Content
+	if sc != 200 && sc != 206 {
+		sum.Lock()
+		sum.err = fmt.Errorf("Did not get 20X status code, got : %v", sc)
+		sum.Unlock()
+		log.Println(sum.err)
+		return
+	}
+
+	sum.Lock()
+	sum.chunks[index] = append(sum.chunks[index], data...)
+	sum.Unlock()
 }
 
-func getRangeDetails(u string) (bool, int) {
+//getRangeDetails returns ifRangeIsSupported,statuscode,error
+func getRangeDetails(u string) (bool, int, error) {
 
 	request, err := http.NewRequest("HEAD", u, strings.NewReader(""))
 	if err != nil {
-		log.Fatalln(err)
+		return false, 0, err
 	}
 
-	sc, headers, _ := doAPICall(request)
+	sc, headers, _, err := doAPICall(request)
+
+	if err != nil {
+		return false, 0, err
+	}
 
 	if sc != 200 && sc != 206 {
-		log.Fatalln(err)
+		return false, 0, err
 	}
 
 	conLen := headers.Get("Content-Length")
 	cl, err := strconv.Atoi(conLen)
 	if err != nil {
-		log.Fatal(err)
+		return false, 0, err
 	}
 
 	//Accept-Ranges: bytes
 	if headers.Get("Accept-Ranges") == "bytes" {
-		return true, cl
+		return true, cl, nil
 	}
 
-	return false, cl
+	return false, cl, nil
 
 }
 
-func doAPICall(request *http.Request) (int, http.Header, []byte) {
+//doAPICall will do the api call and return statuscode,headers,data,error respectively
+func doAPICall(request *http.Request) (int, http.Header, []byte, error) {
 
 	client := http.Client{
 		Timeout: 5 * time.Second,
@@ -162,15 +264,15 @@ func doAPICall(request *http.Request) (int, http.Header, []byte) {
 
 	response, err := client.Do(request)
 	if err != nil {
-		log.Fatalln(err)
+		return 0, http.Header{}, []byte{}, err
 	}
 	defer response.Body.Close()
 
 	data, err := ioutil.ReadAll(response.Body)
 	if err != nil {
-		log.Fatalln(err)
+		return 0, http.Header{}, []byte{}, err
 	}
 
-	return response.StatusCode, response.Header, data
+	return response.StatusCode, response.Header, data, nil
 
 }
