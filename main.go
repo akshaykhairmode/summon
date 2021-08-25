@@ -32,7 +32,7 @@ func init() {
 
 func main() {
 
-	sum, err := NewGodown()
+	sum, err := NewSummon()
 	if err != nil {
 		log.Fatalf("ERROR : %s", err)
 	}
@@ -47,7 +47,7 @@ func main() {
 
 }
 
-func NewGodown() (*summon, error) {
+func NewSummon() (*summon, error) {
 
 	c := flag.Int("c", 0, "number of concurrent connections")
 	h := flag.Bool("h", false, "displays available flags")
