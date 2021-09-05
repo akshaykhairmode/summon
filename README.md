@@ -23,8 +23,5 @@ This will install go binary in your $GOBIN (If its set) or at ~/go/bin/summon
 
 
 **TODO**
-
- 1. For Big Files, Do not load data in memory.
- 2. Ability to resume download.
- 3. Fix file overwriting.
- 4. Add progress bar.
+ 1. Ability to resume download.
+ 2. Add progress bar.
