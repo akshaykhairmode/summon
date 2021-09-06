@@ -132,7 +132,6 @@ func (sum *summon) createOutputFile(opath string) error {
 	}
 
 	out, err := os.OpenFile(fname, os.O_CREATE|os.O_RDWR|os.O_APPEND, 0755)
-
 	if err != nil {
 		return fmt.Errorf("Error while creating file : %v", err)
 	}
@@ -312,7 +311,7 @@ func doAPICall(request *http.Request) (int, http.Header, []byte, error) {
 }
 
 //getDataAndWriteToFile will get the response and write to file
-func getDataAndWriteToFile(request *http.Request, f *os.File) (int64, int, error) {
+func getDataAndWriteToFile(request *http.Request, f io.ReadWriter) (int64, int, error) {
 
 	client := http.Client{
 		Timeout: 0,
