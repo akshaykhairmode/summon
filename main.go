@@ -184,7 +184,7 @@ func (sum *summon) process(contentLength int) error {
 		sum.chunks[index] = f
 
 		wg.Add(1)
-		go sum.downloadFileForRange(wg, sum.uri, strconv.Itoa(i)+"-"+strconv.Itoa(j), index)
+		go sum.downloadFileForRange(wg, sum.uri, strconv.Itoa(i)+"-"+strconv.Itoa(j), f)
 		index++
 	}
 
@@ -218,7 +218,7 @@ func (sum *summon) combineChunks() error {
 }
 
 //downloadFileForRange will download the file for the provided range and set the bytes to the chunk map, will set summor.error field if error occurs
-func (sum *summon) downloadFileForRange(wg *sync.WaitGroup, u, r string, index int) {
+func (sum *summon) downloadFileForRange(wg *sync.WaitGroup, u, r string, handle io.Writer) {
 
 	if wg != nil {
 		defer wg.Done()
@@ -233,11 +233,6 @@ func (sum *summon) downloadFileForRange(wg *sync.WaitGroup, u, r string, index i
 	if r != "" {
 		request.Header.Add("Range", "bytes="+r)
 	}
-
-	//Get the handle
-	sum.RLock()
-	handle := sum.chunks[index]
-	sum.RUnlock()
 
 	_, sc, err := getDataAndWriteToFile(request, handle)
 	if err != nil {
@@ -311,7 +306,7 @@ func doAPICall(request *http.Request) (int, http.Header, []byte, error) {
 }
 
 //getDataAndWriteToFile will get the response and write to file
-func getDataAndWriteToFile(request *http.Request, f io.ReadWriter) (int64, int, error) {
+func getDataAndWriteToFile(request *http.Request, f io.Writer) (int64, int, error) {
 
 	client := http.Client{
 		Timeout: 0,
