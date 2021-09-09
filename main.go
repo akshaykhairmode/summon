@@ -1,9 +1,9 @@
 package main
 
 import (
-	"bytes"
 	"flag"
 	"fmt"
+	"io"
 	"io/ioutil"
 	"log"
 	"net/http"
@@ -13,15 +13,23 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
+)
+
+const (
+	MAX_CONN = 60
+	MIN_CONN = 1
 )
 
 type summon struct {
-	concurrency int
-	uri         string
-	chunks      map[int][]byte
-	err         error
-	opath       string
-	*sync.Mutex
+	concurrency   int              //No. of connections
+	uri           string           //URL of the file we want to download
+	chunks        map[int]*os.File //Map of temporary files we are creating
+	err           error            //used when error occurs inside a goroutine
+	startTime     time.Time        //to track time took
+	fileName      string           //name of the file we are downloading
+	out           *os.File         //output / downloaded file
+	*sync.RWMutex                  //mutex to lock the map which accessing it concurrently
 }
 
 func init() {
@@ -44,6 +52,8 @@ func main() {
 		log.Fatalf("ERROR : %s", err)
 	}
 
+	log.Printf("Time took : %v", time.Since(sum.startTime))
+
 }
 
 func NewSummon() (*summon, error) {
@@ -59,10 +69,6 @@ func NewSummon() (*summon, error) {
 		return nil, nil
 	}
 
-	if *c <= 0 {
-		*c = 1
-	}
-
 	if len(flag.Args()) <= 0 {
 		return nil, fmt.Errorf("Please pass file url")
 	}
@@ -74,49 +80,88 @@ func NewSummon() (*summon, error) {
 	}
 
 	sum := new(summon)
-	sum.concurrency = *c
+	sum.setConcurrency(*c)
 	sum.uri = uri.String()
-	sum.chunks = make(map[int][]byte)
-	sum.Mutex = &sync.Mutex{}
+	sum.chunks = make(map[int]*os.File)
+	sum.startTime = time.Now()
+	sum.fileName = filepath.Base(sum.uri)
+	sum.RWMutex = &sync.RWMutex{}
 
-	if *o != "" {
-		sum.opath = *o
+	if err := sum.createOutputFile(*o); err != nil {
+		return nil, err
 	}
 
 	return sum, nil
 
 }
 
+//setConcurrency set the concurrency as per min and max
+func (sum *summon) setConcurrency(c int) {
+
+	if c <= 0 {
+		sum.concurrency = MIN_CONN
+		return
+	}
+
+	if c >= 60 {
+		sum.concurrency = MAX_CONN
+		return
+	}
+
+	sum.concurrency = c
+
+}
+
+//createOutputFile ...
+func (sum *summon) createOutputFile(opath string) error {
+
+	var fname string
+
+	if opath != "" {
+		fname = opath
+	} else {
+		currDir, err := os.Getwd()
+		if err != nil {
+			return fmt.Errorf("Error while getting pwd : %v", err)
+		}
+		fname = currDir + "/" + sum.fileName
+	}
+
+	if _, err := os.Stat(fname); !os.IsNotExist(err) {
+		return fmt.Errorf("File already exists : %v", fname)
+	}
+
+	out, err := os.OpenFile(fname, os.O_CREATE|os.O_RDWR|os.O_APPEND, 0755)
+	if err != nil {
+		return fmt.Errorf("Error while creating file : %v", err)
+	}
+
+	sum.out = out
+
+	return nil
+}
+
+//run is basically the start method
 func (sum *summon) run() error {
 
 	isSupported, contentLength, err := getRangeDetails(sum.uri)
+
+	log.Printf("Multiple Connections Supported : %v | Got Content Length : %v", isSupported, contentLength)
+	log.Printf("Using %v connections", sum.concurrency)
 
 	if err != nil {
 		return err
 	}
 
-	if !isSupported || sum.concurrency <= 1 {
-		return sum.processSingle()
-	}
-
-	return sum.processMultiple(contentLength)
+	return sum.process(contentLength)
 
 }
 
-func (sum *summon) processSingle() error {
+//process is the manager method
+func (sum *summon) process(contentLength int) error {
 
-	//Initialize first index with []byte
-	sum.chunks[0] = make([]byte, 0)
-	sum.downloadFileForRange(nil, sum.uri, "", 0)
-
-	if sum.err != nil {
-		return sum.err
-	}
-
-	return sum.combineChunks()
-}
-
-func (sum *summon) processMultiple(contentLength int) error {
+	//Close the output file after everything is done
+	defer sum.out.Close()
 
 	split := contentLength / sum.concurrency
 
@@ -129,10 +174,17 @@ func (sum *summon) processMultiple(contentLength int) error {
 			j = contentLength
 		}
 
-		//Initialize for each index or application will panic
-		sum.chunks[index] = make([]byte, 0)
+		f, err := os.CreateTemp("", sum.fileName+".*.part")
+		if err != nil {
+			return err
+		}
+		defer f.Close()
+		defer os.Remove(f.Name())
+
+		sum.chunks[index] = f
+
 		wg.Add(1)
-		go sum.downloadFileForRange(wg, sum.uri, strconv.Itoa(i)+"-"+strconv.Itoa(j), index)
+		go sum.downloadFileForRange(wg, sum.uri, strconv.Itoa(i)+"-"+strconv.Itoa(j), f)
 		index++
 	}
 
@@ -148,43 +200,25 @@ func (sum *summon) processMultiple(contentLength int) error {
 //combineChunks will combine the chunks in ordered fashion starting from 1
 func (sum *summon) combineChunks() error {
 
-	var fname string
-
-	if sum.opath != "" {
-		fname = sum.opath
-	} else {
-		currDir, err := os.Getwd()
-		if err != nil {
-			return fmt.Errorf("Error while getting pwd : %v", err)
-		}
-		fname = currDir + "/" + filepath.Base(sum.uri)
-	}
-
-	out, err := os.Create(fname)
-	defer out.Close()
-
-	if err != nil {
-		return fmt.Errorf("Error while creating file : %v", err)
-	}
-
-	buf := bytes.NewBuffer(nil)
-	//Not using for range because it does not gurantee ordered iteration
+	var w int64
+	//maps are not ordered hence using for loop
 	for i := 0; i < len(sum.chunks); i++ {
-		buf.Write(sum.chunks[i])
+		handle := sum.chunks[i]
+		handle.Seek(0, 0) //We need to seek because read and write cursor are same and the cursor would be at the end.
+		written, err := io.Copy(sum.out, handle)
+		if err != nil {
+			return err
+		}
+		w += written
 	}
 
-	l, err := buf.WriteTo(out)
-	if err != nil {
-		return fmt.Errorf("Error while writing to file : %v", err)
-	}
-
-	log.Printf("Wrote to File : %v, len : %v", fname, l)
+	log.Printf("Wrote to File : %v, Written bytes : %v", sum.out.Name(), w)
 
 	return nil
 }
 
 //downloadFileForRange will download the file for the provided range and set the bytes to the chunk map, will set summor.error field if error occurs
-func (sum *summon) downloadFileForRange(wg *sync.WaitGroup, u, r string, index int) {
+func (sum *summon) downloadFileForRange(wg *sync.WaitGroup, u, r string, handle io.Writer) {
 
 	if wg != nil {
 		defer wg.Done()
@@ -200,7 +234,7 @@ func (sum *summon) downloadFileForRange(wg *sync.WaitGroup, u, r string, index i
 		request.Header.Add("Range", "bytes="+r)
 	}
 
-	sc, _, data, err := doAPICall(request)
+	_, sc, err := getDataAndWriteToFile(request, handle)
 	if err != nil {
 		sum.err = err
 		return
@@ -215,9 +249,6 @@ func (sum *summon) downloadFileForRange(wg *sync.WaitGroup, u, r string, index i
 		return
 	}
 
-	sum.Lock()
-	sum.chunks[index] = append(sum.chunks[index], data...)
-	sum.Unlock()
 }
 
 //getRangeDetails returns ifRangeIsSupported,statuscode,error
@@ -256,7 +287,7 @@ func getRangeDetails(u string) (bool, int, error) {
 func doAPICall(request *http.Request) (int, http.Header, []byte, error) {
 
 	client := http.Client{
-		Timeout: 0,
+		Timeout: 5 * time.Second,
 	}
 
 	response, err := client.Do(request)
@@ -272,4 +303,25 @@ func doAPICall(request *http.Request) (int, http.Header, []byte, error) {
 
 	return response.StatusCode, response.Header, data, nil
 
+}
+
+//getDataAndWriteToFile will get the response and write to file
+func getDataAndWriteToFile(request *http.Request, f io.Writer) (int64, int, error) {
+
+	client := http.Client{
+		Timeout: 0,
+	}
+
+	response, err := client.Do(request)
+	if err != nil {
+		return 0, response.StatusCode, fmt.Errorf("Error while doing request : %v", err)
+	}
+	defer response.Body.Close()
+
+	w, err := io.Copy(f, response.Body)
+	if err != nil {
+		return 0, response.StatusCode, fmt.Errorf("Error while copying response to file : %v", err)
+	}
+
+	return w, response.StatusCode, nil
 }
