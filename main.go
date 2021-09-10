@@ -20,24 +20,24 @@ import (
 const (
 	MAX_CONN      = 60
 	MIN_CONN      = 1
-	PROGRESS_SIZE = 50
+	PROGRESS_SIZE = 30
 )
 
 type summon struct {
-	concurrency   int              //No. of connections
-	uri           string           //URL of the file we want to download
-	chunks        map[int]*os.File //Map of temporary files we are creating
-	err           error            //used when error occurs inside a goroutine
-	startTime     time.Time        //to track time took
-	fileName      string           //name of the file we are downloading
-	out           *os.File         //output / downloaded file
-	progressBar   map[int]*progress
-	*sync.RWMutex //mutex to lock the map which accessing it concurrently
+	concurrency   int               //No. of connections
+	uri           string            //URL of the file we want to download
+	chunks        map[int]*os.File  //Map of temporary files we are creating
+	err           error             //used when error occurs inside a goroutine
+	startTime     time.Time         //to track time took
+	fileName      string            //name of the file we are downloading
+	out           *os.File          //output / downloaded file
+	progressBar   map[int]*progress //index => progress
+	*sync.RWMutex                   //mutex to lock the map which accessing it concurrently
 }
 
 type progress struct {
-	curr  int
-	total int
+	curr  int //curr is the current read till now
+	total int //total bytes which we are supposed to read
 }
 
 func init() {
@@ -192,8 +192,14 @@ func (sum *summon) process(contentLength int) error {
 
 		sum.chunks[index] = f
 
+		pg := &progress{curr: 0, total: j - i}
+
+		sum.Lock()
+		sum.progressBar[index] = pg
+		sum.Unlock()
+
 		wg.Add(1)
-		go sum.downloadFileForRange(wg, sum.uri, i, j, index, f)
+		go sum.downloadFileForRange(wg, sum.uri, strconv.Itoa(i)+"-"+strconv.Itoa(j), index, f)
 		index++
 	}
 
@@ -212,7 +218,7 @@ func (sum *summon) process(contentLength int) error {
 	return sum.combineChunks()
 }
 
-func (sum summon) startProgressBar(stop chan struct{}) {
+func (sum *summon) startProgressBar(stop chan struct{}) {
 
 	ticker := time.NewTicker(time.Second)
 	defer ticker.Stop()
@@ -221,7 +227,12 @@ func (sum summon) startProgressBar(stop chan struct{}) {
 		select {
 		case <-ticker.C:
 			for i := 0; i < len(sum.progressBar); i++ {
-				printProgress(i, *sum.progressBar[i])
+
+				sum.RLock()
+				p := *sum.progressBar[i]
+				sum.RUnlock()
+
+				printProgress(i, p)
 			}
 
 			//Move cursor back
@@ -231,7 +242,10 @@ func (sum summon) startProgressBar(stop chan struct{}) {
 
 		case <-stop:
 			for i := 0; i < len(sum.progressBar); i++ {
-				printProgress(i, *sum.progressBar[i])
+				sum.RLock()
+				p := *sum.progressBar[i]
+				sum.RUnlock()
+				printProgress(i, p)
 			}
 			return
 		}
@@ -258,7 +272,7 @@ func printProgress(index int, p progress) {
 	s.WriteString("]")
 	s.WriteString(fmt.Sprintf(" %v%%", percent))
 
-	fmt.Printf("Connection %d - %s\n", index+1, s.String())
+	fmt.Printf("Connection %d  - %s\n", index+1, s.String())
 }
 
 //combineChunks will combine the chunks in ordered fashion starting from 1
@@ -282,7 +296,7 @@ func (sum *summon) combineChunks() error {
 }
 
 //downloadFileForRange will download the file for the provided range and set the bytes to the chunk map, will set summor.error field if error occurs
-func (sum *summon) downloadFileForRange(wg *sync.WaitGroup, u string, low, high, index int, handle io.Writer) {
+func (sum *summon) downloadFileForRange(wg *sync.WaitGroup, u, r string, index int, handle io.Writer) {
 
 	if wg != nil {
 		defer wg.Done()
@@ -294,12 +308,9 @@ func (sum *summon) downloadFileForRange(wg *sync.WaitGroup, u string, low, high,
 		return
 	}
 
-	r := strconv.Itoa(low) + "-" + strconv.Itoa(high)
 	request.Header.Add("Range", "bytes="+r)
 
-	totalBytes := high - low
-
-	sc, err := sum.getDataAndWriteToFile(request, handle, totalBytes, index)
+	sc, err := sum.getDataAndWriteToFile(request, handle, index)
 	if err != nil {
 		sum.err = err
 		return
@@ -371,7 +382,7 @@ func doAPICall(request *http.Request) (int, http.Header, []byte, error) {
 }
 
 //getDataAndWriteToFile will get the response and write to file
-func (sum *summon) getDataAndWriteToFile(request *http.Request, f io.Writer, totalBytes, index int) (int, error) {
+func (sum *summon) getDataAndWriteToFile(request *http.Request, f io.Writer, index int) (int, error) {
 
 	client := http.Client{
 		Timeout: 0,
@@ -387,11 +398,9 @@ func (sum *summon) getDataAndWriteToFile(request *http.Request, f io.Writer, tot
 	var buf = make([]byte, 500)
 	var read int
 
-	pg := &progress{curr: 0, total: totalBytes}
-
-	sum.Lock()
-	sum.progressBar[index] = pg
-	sum.Unlock()
+	sum.RLock()
+	pg := sum.progressBar[index]
+	sum.RUnlock()
 
 	for {
 		r, err := response.Body.Read(buf)
