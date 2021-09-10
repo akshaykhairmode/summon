@@ -197,12 +197,7 @@ func (sum *summon) process(contentLength int) error {
 		defer os.Remove(f.Name())
 
 		sum.chunks[index] = f
-
-		pg := &progress{curr: 0, total: j - i}
-
-		sum.Lock()
-		sum.progressBar[index] = pg
-		sum.Unlock()
+		sum.progressBar[index] = &progress{curr: 0, total: j - i}
 
 		wg.Add(1)
 		go sum.downloadFileForRange(wg, sum.uri, strconv.Itoa(i)+"-"+strconv.Itoa(j), index, f)
@@ -403,16 +398,12 @@ func (sum *summon) getDataAndWriteToFile(request *http.Request, f io.Writer, ind
 	var buf = make([]byte, 500)
 	var readTotal int
 
-	sum.RLock()
-	pg := sum.progressBar[index]
-	sum.RUnlock()
-
 	for {
 		select {
 		case cErr := <-sum.stop:
 			return response.StatusCode, cErr
 		default:
-			err := readBody(response, pg, f, buf, &readTotal)
+			err := sum.readBody(response, f, buf, &readTotal, index)
 			if err == io.EOF {
 				return response.StatusCode, nil
 			}
@@ -424,7 +415,7 @@ func (sum *summon) getDataAndWriteToFile(request *http.Request, f io.Writer, ind
 	}
 }
 
-func readBody(response *http.Response, pg *progress, f io.Writer, buf []byte, readTotal *int) error {
+func (sum *summon) readBody(response *http.Response, f io.Writer, buf []byte, readTotal *int, index int) error {
 
 	r, err := response.Body.Read(buf)
 
@@ -438,7 +429,9 @@ func readBody(response *http.Response, pg *progress, f io.Writer, buf []byte, re
 
 	*readTotal += r
 
-	pg.curr = *readTotal
+	sum.Lock()
+	sum.progressBar[index].curr = *readTotal
+	sum.Unlock()
 
 	return nil
 }
