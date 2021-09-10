@@ -6,6 +6,7 @@ import (
 	"io"
 	"io/ioutil"
 	"log"
+	"math"
 	"net/http"
 	"net/url"
 	"os"
@@ -17,8 +18,9 @@ import (
 )
 
 const (
-	MAX_CONN = 60
-	MIN_CONN = 1
+	MAX_CONN      = 60
+	MIN_CONN      = 1
+	PROGRESS_SIZE = 50
 )
 
 type summon struct {
@@ -29,7 +31,13 @@ type summon struct {
 	startTime     time.Time        //to track time took
 	fileName      string           //name of the file we are downloading
 	out           *os.File         //output / downloaded file
-	*sync.RWMutex                  //mutex to lock the map which accessing it concurrently
+	progressBar   map[int]*progress
+	*sync.RWMutex //mutex to lock the map which accessing it concurrently
+}
+
+type progress struct {
+	curr  int
+	total int
 }
 
 func init() {
@@ -86,6 +94,7 @@ func NewSummon() (*summon, error) {
 	sum.startTime = time.Now()
 	sum.fileName = filepath.Base(sum.uri)
 	sum.RWMutex = &sync.RWMutex{}
+	sum.progressBar = make(map[int]*progress)
 
 	if err := sum.createOutputFile(*o); err != nil {
 		return nil, err
@@ -184,17 +193,72 @@ func (sum *summon) process(contentLength int) error {
 		sum.chunks[index] = f
 
 		wg.Add(1)
-		go sum.downloadFileForRange(wg, sum.uri, strconv.Itoa(i)+"-"+strconv.Itoa(j), f)
+		go sum.downloadFileForRange(wg, sum.uri, i, j, index, f)
 		index++
 	}
 
+	stop := make(chan struct{})
+
+	//Keep Printing Progress
+	go sum.startProgressBar(stop)
 	wg.Wait()
+
+	stop <- struct{}{}
 
 	if sum.err != nil {
 		return sum.err
 	}
 
 	return sum.combineChunks()
+}
+
+func (sum summon) startProgressBar(stop chan struct{}) {
+
+	ticker := time.NewTicker(time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ticker.C:
+			for i := 0; i < len(sum.progressBar); i++ {
+				printProgress(i, *sum.progressBar[i])
+			}
+
+			//Move cursor back
+			for i := 0; i < len(sum.progressBar); i++ {
+				fmt.Print("\033[F")
+			}
+
+		case <-stop:
+			for i := 0; i < len(sum.progressBar); i++ {
+				printProgress(i, *sum.progressBar[i])
+			}
+			return
+		}
+	}
+
+}
+
+func printProgress(index int, p progress) {
+
+	s := strings.Builder{}
+
+	percent := math.Round((float64(p.curr) / float64(p.total)) * 100)
+
+	n := int((percent / 100) * PROGRESS_SIZE)
+
+	s.WriteString("[")
+	for i := 0; i < PROGRESS_SIZE; i++ {
+		if i <= n {
+			s.WriteString(">")
+		} else {
+			s.WriteString(" ")
+		}
+	}
+	s.WriteString("]")
+	s.WriteString(fmt.Sprintf(" %v%%", percent))
+
+	fmt.Printf("Connection %d - %s\n", index, s.String())
 }
 
 //combineChunks will combine the chunks in ordered fashion starting from 1
@@ -218,7 +282,7 @@ func (sum *summon) combineChunks() error {
 }
 
 //downloadFileForRange will download the file for the provided range and set the bytes to the chunk map, will set summor.error field if error occurs
-func (sum *summon) downloadFileForRange(wg *sync.WaitGroup, u, r string, handle io.Writer) {
+func (sum *summon) downloadFileForRange(wg *sync.WaitGroup, u string, low, high, index int, handle io.Writer) {
 
 	if wg != nil {
 		defer wg.Done()
@@ -230,11 +294,12 @@ func (sum *summon) downloadFileForRange(wg *sync.WaitGroup, u, r string, handle 
 		return
 	}
 
-	if r != "" {
-		request.Header.Add("Range", "bytes="+r)
-	}
+	r := strconv.Itoa(low) + "-" + strconv.Itoa(high)
+	request.Header.Add("Range", "bytes="+r)
 
-	_, sc, err := getDataAndWriteToFile(request, handle)
+	totalBytes := high - low
+
+	sc, err := sum.getDataAndWriteToFile(request, handle, totalBytes, index)
 	if err != nil {
 		sum.err = err
 		return
@@ -306,7 +371,7 @@ func doAPICall(request *http.Request) (int, http.Header, []byte, error) {
 }
 
 //getDataAndWriteToFile will get the response and write to file
-func getDataAndWriteToFile(request *http.Request, f io.Writer) (int64, int, error) {
+func (sum *summon) getDataAndWriteToFile(request *http.Request, f io.Writer, totalBytes, index int) (int, error) {
 
 	client := http.Client{
 		Timeout: 0,
@@ -314,14 +379,39 @@ func getDataAndWriteToFile(request *http.Request, f io.Writer) (int64, int, erro
 
 	response, err := client.Do(request)
 	if err != nil {
-		return 0, response.StatusCode, fmt.Errorf("Error while doing request : %v", err)
+		return response.StatusCode, fmt.Errorf("Error while doing request : %v", err)
 	}
 	defer response.Body.Close()
 
-	w, err := io.Copy(f, response.Body)
-	if err != nil {
-		return 0, response.StatusCode, fmt.Errorf("Error while copying response to file : %v", err)
+	//we make buffer of 500 bytes and try to read 500 bytes every iteration.
+	var buf = make([]byte, 500)
+	var read int
+
+	pg := &progress{curr: 0, total: totalBytes}
+
+	sum.Lock()
+	sum.progressBar[index] = pg
+	sum.Unlock()
+
+	for {
+		r, err := response.Body.Read(buf)
+
+		if r > 0 {
+			f.Write(buf[:r])
+		}
+
+		if err == io.EOF {
+			break
+		}
+
+		if err != nil {
+			return response.StatusCode, err
+		}
+
+		read += r
+
+		pg.curr = read
 	}
 
-	return w, response.StatusCode, nil
+	return response.StatusCode, nil
 }
