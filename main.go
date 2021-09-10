@@ -10,15 +10,17 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 )
 
 const (
-	MAX_CONN      = 60
+	MAX_CONN      = 20
 	MIN_CONN      = 1
 	PROGRESS_SIZE = 30
 )
@@ -32,7 +34,8 @@ type summon struct {
 	fileName      string            //name of the file we are downloading
 	out           *os.File          //output / downloaded file
 	progressBar   map[int]*progress //index => progress
-	*sync.RWMutex                   //mutex to lock the map which accessing it concurrently
+	stop          chan error        //to handle stop signals from terminal
+	*sync.RWMutex                   //mutex to lock the maps which accessing it concurrently
 }
 
 type progress struct {
@@ -55,6 +58,9 @@ func main() {
 	if sum == nil {
 		return
 	}
+
+	//get the user kill signals
+	go sum.catchSignals()
 
 	if err := sum.run(); err != nil {
 		log.Fatalf("ERROR : %s", err)
@@ -95,6 +101,7 @@ func NewSummon() (*summon, error) {
 	sum.fileName = filepath.Base(sum.uri)
 	sum.RWMutex = &sync.RWMutex{}
 	sum.progressBar = make(map[int]*progress)
+	sum.stop = make(chan error)
 
 	if err := sum.createOutputFile(*o); err != nil {
 		return nil, err
@@ -107,18 +114,17 @@ func NewSummon() (*summon, error) {
 //setConcurrency set the concurrency as per min and max
 func (sum *summon) setConcurrency(c int) {
 
-	if c <= 0 {
+	if c <= MIN_CONN {
 		sum.concurrency = MIN_CONN
 		return
 	}
 
-	if c >= 60 {
+	if c >= MAX_CONN {
 		sum.concurrency = MAX_CONN
 		return
 	}
 
 	sum.concurrency = c
-
 }
 
 //createOutputFile ...
@@ -212,6 +218,7 @@ func (sum *summon) process(contentLength int) error {
 	stop <- struct{}{}
 
 	if sum.err != nil {
+		os.Remove(sum.out.Name())
 		return sum.err
 	}
 
@@ -298,9 +305,7 @@ func (sum *summon) combineChunks() error {
 //downloadFileForRange will download the file for the provided range and set the bytes to the chunk map, will set summor.error field if error occurs
 func (sum *summon) downloadFileForRange(wg *sync.WaitGroup, u, r string, index int, handle io.Writer) {
 
-	if wg != nil {
-		defer wg.Done()
-	}
+	defer wg.Done()
 
 	request, err := http.NewRequest("GET", u, strings.NewReader(""))
 	if err != nil {
@@ -396,31 +401,57 @@ func (sum *summon) getDataAndWriteToFile(request *http.Request, f io.Writer, ind
 
 	//we make buffer of 500 bytes and try to read 500 bytes every iteration.
 	var buf = make([]byte, 500)
-	var read int
+	var readTotal int
 
 	sum.RLock()
 	pg := sum.progressBar[index]
 	sum.RUnlock()
 
 	for {
-		r, err := response.Body.Read(buf)
+		select {
+		case cErr := <-sum.stop:
+			return response.StatusCode, cErr
+		default:
+			err := readBody(response, pg, f, buf, &readTotal)
+			if err == io.EOF {
+				return response.StatusCode, nil
+			}
 
-		if r > 0 {
-			f.Write(buf[:r])
+			if err != nil {
+				return response.StatusCode, err
+			}
 		}
+	}
+}
 
-		if err == io.EOF {
-			break
-		}
+func readBody(response *http.Response, pg *progress, f io.Writer, buf []byte, readTotal *int) error {
 
-		if err != nil {
-			return response.StatusCode, err
-		}
+	r, err := response.Body.Read(buf)
 
-		read += r
-
-		pg.curr = read
+	if r > 0 {
+		f.Write(buf[:r])
 	}
 
-	return response.StatusCode, nil
+	if err != nil {
+		return err
+	}
+
+	*readTotal += r
+
+	pg.curr = *readTotal
+
+	return nil
+}
+
+func (sum *summon) catchSignals() {
+	sigc := make(chan os.Signal, 1)
+	signal.Notify(sigc,
+		syscall.SIGHUP,
+		syscall.SIGINT,
+		syscall.SIGTERM,
+		syscall.SIGQUIT)
+	go func() {
+		s := <-sigc
+		sum.stop <- fmt.Errorf("got stop signal : %v", s)
+	}()
 }

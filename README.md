@@ -24,4 +24,3 @@ This will install go binary in your $GOBIN (If its set) or at ~/go/bin/summon
 
 **TODO**
  1. Ability to resume download.
- 2. Add progress bar.
