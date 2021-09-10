@@ -258,7 +258,7 @@ func printProgress(index int, p progress) {
 	s.WriteString("]")
 	s.WriteString(fmt.Sprintf(" %v%%", percent))
 
-	fmt.Printf("Connection %d - %s\n", index, s.String())
+	fmt.Printf("Connection %d - %s\n", index+1, s.String())
 }
 
 //combineChunks will combine the chunks in ordered fashion starting from 1
