@@ -10,6 +10,8 @@ This will install go binary in your $GOBIN (If its set) or at ~/go/bin/summon
 
 **Example Usage** - `$GOBIN/summon -c 5 http://www.africau.edu/images/default/sample.pdf`
 
+![Download Example](https://s9.gifyu.com/images/summon.gif)
+
 **Flags Available**
   
  
