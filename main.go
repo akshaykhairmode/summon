@@ -445,6 +445,8 @@ func (sum *summon) catchSignals() {
 		syscall.SIGQUIT)
 	go func() {
 		s := <-sigc
-		sum.stop <- fmt.Errorf("got stop signal : %v", s)
+		for i := 0; i < len(sum.chunks); i++ {
+			sum.stop <- fmt.Errorf("got stop signal : %v", s)
+		}
 	}()
 }
