@@ -2,7 +2,7 @@
 # summon
 Simple go tool to download file with multiple connections.
 
-**Requirements** - Go must be installed. go v1.6 and greater reqeuired. Download From https://golang.org/doc/install
+**Requirements** - Go must be installed. go v1.6 and greater required. Download From https://golang.org/doc/install
 
 **To install**, simply use  `go get github.com/akshaykhairmode/summon`
 
