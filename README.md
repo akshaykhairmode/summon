@@ -26,3 +26,5 @@ This will install go binary in your $GOBIN (If its set) or at ~/go/bin/summon
 
 **TODO**
  1. Ability to resume download.
+
+If you want to learn step by step, click [here](https://www.abilityrush.com/download-file-concurrently-in-golang-part-1/)
