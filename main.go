@@ -22,19 +22,22 @@ import (
 const (
 	MAX_CONN      = 20
 	MIN_CONN      = 1
+	DEFAULT_CONN  = 4
 	PROGRESS_SIZE = 30
 )
 
 type summon struct {
 	concurrency   int               //No. of connections
 	uri           string            //URL of the file we want to download
-	chunks        map[int]*os.File  //Map of temporary files we are creating
+	chunks        map[int]*os.File  //Map of part files we are creating
 	err           error             //used when error occurs inside a goroutine
 	startTime     time.Time         //to track time took
 	fileName      string            //name of the file we are downloading
+	absolutePath  string            //absolute path of the output file
 	out           *os.File          //output / downloaded file
 	progressBar   map[int]*progress //index => progress
 	stop          chan error        //to handle stop signals from terminal
+	meta          *os.File          //to store the metadata information for resume purpose
 	*sync.RWMutex                   //mutex to lock the maps which accessing it concurrently
 }
 
@@ -95,6 +98,7 @@ func NewSummon() (*summon, error) {
 
 	sum := new(summon)
 	sum.setConcurrency(*c)
+	sum.setAbsolutePath(*o)
 	sum.uri = uri.String()
 	sum.chunks = make(map[int]*os.File)
 	sum.startTime = time.Now()
@@ -114,6 +118,12 @@ func NewSummon() (*summon, error) {
 //setConcurrency set the concurrency as per min and max
 func (sum *summon) setConcurrency(c int) {
 
+	//We use default connections in case no concurrency is passed
+	if c <= 0 {
+		sum.concurrency = DEFAULT_CONN
+		return
+	}
+
 	if c <= MIN_CONN {
 		sum.concurrency = MIN_CONN
 		return
@@ -127,26 +137,31 @@ func (sum *summon) setConcurrency(c int) {
 	sum.concurrency = c
 }
 
+func (sum *summon) setAbsolutePath(opath string) error {
+
+	if filepath.IsAbs(opath) {
+		sum.absolutePath = opath
+		return nil
+	}
+
+	absPath, err := filepath.Abs(opath)
+	if err != nil {
+		return err
+	}
+
+	sum.absolutePath = absPath
+
+	return nil
+}
+
 //createOutputFile ...
 func (sum *summon) createOutputFile(opath string) error {
 
-	var fname string
-
-	if opath != "" {
-		fname = opath
-	} else {
-		currDir, err := os.Getwd()
-		if err != nil {
-			return fmt.Errorf("Error while getting pwd : %v", err)
-		}
-		fname = currDir + "/" + sum.fileName
+	if _, err := os.Stat(sum.absolutePath); !os.IsNotExist(err) {
+		return fmt.Errorf("File already exists : %v", sum.absolutePath)
 	}
 
-	if _, err := os.Stat(fname); !os.IsNotExist(err) {
-		return fmt.Errorf("File already exists : %v", fname)
-	}
-
-	out, err := os.OpenFile(fname, os.O_CREATE|os.O_RDWR|os.O_APPEND, 0755)
+	out, err := os.OpenFile(sum.absolutePath, os.O_CREATE|os.O_RDWR|os.O_APPEND, 0755)
 	if err != nil {
 		return fmt.Errorf("Error while creating file : %v", err)
 	}
@@ -189,7 +204,7 @@ func (sum *summon) process(contentLength int) error {
 			j = contentLength
 		}
 
-		f, err := os.CreateTemp("", sum.fileName+".*.part")
+		f, err := os.Create(fmt.Sprintf("%s.*.summonp%d", sum.fileName, index))
 		if err != nil {
 			return err
 		}
@@ -434,6 +449,17 @@ func (sum *summon) readBody(response *http.Response, f io.Writer, buf []byte, re
 	sum.Unlock()
 
 	return nil
+}
+
+//canBeResumed tells us if the file can be resumed
+func (sum *summon) canBeResumed() bool {
+
+	return true
+}
+
+//storeMetadata store the current status of the download
+func (sum *summon) storeMetadata() {
+
 }
 
 func (sum *summon) catchSignals() {
