@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"flag"
 	"fmt"
 	"log"
@@ -21,6 +22,8 @@ func init() {
 	flag.CommandLine.SetOutput(os.Stdout)
 }
 
+var ErrGracefulShutdown = errors.New("Got Stop Signal")
+
 func main() {
 
 	sum, err := NewSummon()
@@ -39,13 +42,7 @@ func main() {
 		log.Fatalf("ERROR : %s", err)
 	}
 
-	for _, f := range sum.fileDetails.chunks {
-		file := f.Name()
-		f.Close()
-		os.Remove(file)
-	}
-
-	log.Printf("Time took : %v", time.Since(sum.startTime))
+	LogWriter.Printf("Time took : %v", time.Since(sum.startTime))
 
 }
 
@@ -67,7 +64,20 @@ func (sum *summon) run() error {
 	log.Printf("Got Content Length : %v", contentLength)
 	log.Printf("Using %v connections", sum.concurrency)
 
-	return sum.process()
+	err = sum.process()
+
+	if err == nil {
+		LogWriter.Printf("Cleaning Up, Error : %v", err)
+		return sum.cleanUp(sum.fileDetails.chunks)
+	}
+
+	//If its a graceful shutdown we can resume it later so we dont want to delete the files
+	if err != ErrGracefulShutdown {
+		LogWriter.Printf("Cleaning Up, Error : %v", err)
+		return sum.cleanUp(sum.fileDetails.chunks, sum.fileDetails.tempOutFile.Name())
+	}
+
+	return nil
 
 }
 

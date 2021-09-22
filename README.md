@@ -1,6 +1,6 @@
 
 # summon
-Simple go tool to download file with multiple connections.
+Simple go tool to download file with multiple connections. Currently supports linux only.
 
 **Requirements** - Go must be installed. go v1.6 and greater required. Download From https://golang.org/doc/install
 
@@ -13,8 +13,6 @@ This will install go binary in your $GOBIN (If its set) or at ~/go/bin/summon
 ![Download Example](https://s9.gifyu.com/images/summon.gif)
 
 **Flags Available**
-  
- 
 
      -c int
     	    number of concurrent connections

@@ -2,7 +2,6 @@ package main
 
 import (
 	"fmt"
-	"log"
 	"os"
 	"path/filepath"
 	"strings"
@@ -17,10 +16,9 @@ type resume struct {
 }
 
 //canBeResumed tells us if the file can be resumed
-func (sum *summon) canBeResumed(fpath string) (bool, map[uint32]*os.File) {
+func (sum *summon) canBeResumed(fpath string) (bool, []string) {
 
 	dir := filepath.Dir(fpath)
-	chunks := map[uint32]*os.File{}
 
 	parts, _ := filepath.Glob(dir + sum.separator + "." + sum.fileDetails.fileName + "*sump*")
 
@@ -32,23 +30,26 @@ func (sum *summon) canBeResumed(fpath string) (bool, map[uint32]*os.File) {
 
 		decData, err := decode(encData)
 		if err != nil {
-			log.Println(err)
-			return false, chunks
+			LogWriter.Println(err)
+			return false, parts
 		}
 
 		resumeVals := strings.Split(decData, "#")
 
 		metaData, err := parseUint32(resumeVals[0], resumeVals[1], resumeVals[2])
 		if err != nil {
-			return false, chunks
+			LogWriter.Println(err)
+			return false, parts
 		}
 
 		index, start, end := metaData[0], metaData[1], metaData[2]
 
+		LogWriter.Printf("Read Meta Data for index : %d, start : %d, end : %d", index, start, end)
+
 		finfo, err := os.Stat(absPath)
 		if err != nil {
-			log.Println(err)
-			return false, chunks
+			LogWriter.Println(err)
+			return false, parts
 		}
 
 		contentL := finfo.Size()
@@ -57,7 +58,7 @@ func (sum *summon) canBeResumed(fpath string) (bool, map[uint32]*os.File) {
 		sum.fileDetails.resume[index] = resume{downloaded: uint32(contentL), end: end, start: start, tempFilePath: absPath}
 	}
 
-	return true, chunks
+	return true, parts
 }
 
 func (sum *summon) resumeDownload(wg *sync.WaitGroup) error {
@@ -73,6 +74,8 @@ func (sum *summon) resumeDownload(wg *sync.WaitGroup) error {
 		//We will start the progress from last time, so we set the current progress directly
 		sum.progressBar.p[index] = &progress{curr: sum.fileDetails.resume[index].downloaded, total: total}
 
+		LogWriter.Printf("Resume Details - Start : %d , End : %d, Total : %d for index : %v", start, end, total, index)
+
 		contentRange := fmt.Sprintf("%d-%d", start, end)
 
 		f, err := os.OpenFile(sum.fileDetails.resume[index].tempFilePath, os.O_RDWR|os.O_APPEND, 0644)
@@ -81,7 +84,7 @@ func (sum *summon) resumeDownload(wg *sync.WaitGroup) error {
 		}
 
 		wg.Add(1)
-		go sum.downloadFileForRange(wg, sum.uri, contentRange, index, f)
+		go sum.downloadFileForRange(wg, contentRange, index, f)
 	}
 
 	return nil
@@ -110,7 +113,7 @@ func (sum *summon) download(wg *sync.WaitGroup) error {
 		}
 
 		//init progressbar
-		sum.progressBar.p[start] = &progress{curr: 0, total: end - start}
+		sum.progressBar.p[index] = &progress{curr: 0, total: end - start}
 
 		//init temp files
 		sum.fileDetails.chunks[index] = f
@@ -118,7 +121,7 @@ func (sum *summon) download(wg *sync.WaitGroup) error {
 		contentRange := fmt.Sprintf("%d-%d", start, end)
 
 		wg.Add(1)
-		go sum.downloadFileForRange(wg, sum.uri, contentRange, index, f)
+		go sum.downloadFileForRange(wg, contentRange, index, f)
 		index++
 	}
 
@@ -126,16 +129,34 @@ func (sum *summon) download(wg *sync.WaitGroup) error {
 
 }
 
-func (sum *summon) cleanOldChunks(chunks map[uint32]*os.File, tempFileName string) error {
+func (sum *summon) cleanUp(chunks map[uint32]*os.File, tempFileName ...string) error {
 
 	for _, handle := range chunks {
+
+		if handle == nil {
+			continue
+		}
+
 		handle.Close()
+
 		if err := os.Remove(handle.Name()); err != nil {
 			return err
 		}
 	}
 
-	return os.Remove(tempFileName)
+	for _, temp := range tempFileName {
+
+		LogWriter.Printf("Removing file : %v", temp)
+
+		if !fileExists(temp) {
+			continue
+		}
+
+		os.Remove(temp)
+
+	}
+
+	return nil
 }
 
 //createTempOutputFile ...
@@ -149,7 +170,7 @@ func (sum *summon) createTempOutputFile() error {
 	tempOutFileName := sum.fileDetails.fileDir + sum.separator + "." + sum.fileDetails.fileName
 
 	if fileExists(tempOutFileName) {
-		if isValid, chunks := sum.canBeResumed(tempOutFileName); isValid {
+		if isValid, parts := sum.canBeResumed(tempOutFileName); isValid {
 			var shouldResume string
 			fmt.Print("Looks like previous download was incomplete for this file, do you want to resume ? [Y/n]")
 			_, err := fmt.Scanln(&shouldResume)
@@ -159,10 +180,9 @@ func (sum *summon) createTempOutputFile() error {
 
 			if shouldResume == "Y" {
 				sum.isResume = true
-				sum.fileDetails.chunks = chunks
-				sum.concurrency = uint32(len(chunks))
+				sum.concurrency = uint32(len(sum.fileDetails.chunks))
 			} else {
-				if err := sum.cleanOldChunks(chunks, tempOutFileName); err != nil {
+				if err := sum.cleanUp(sum.fileDetails.chunks, append(parts, tempOutFileName)...); err != nil {
 					return err
 				}
 			}

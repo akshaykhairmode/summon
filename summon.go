@@ -16,6 +16,8 @@ import (
 	"time"
 )
 
+type downloader func(wg *sync.WaitGroup) error
+
 type summon struct {
 	concurrency   uint32      //No. of connections
 	uri           string      //URL of the file we want to download
@@ -51,11 +53,8 @@ func NewSummon() (*summon, error) {
 		return nil, nil
 	}
 
-	if args.verbose {
-		LogWriter = DevLogger{}
-	} else {
-		LogWriter = ProdLogger{}
-	}
+	//Set logger
+	setLogWriter(args.verbose)
 
 	sum := new(summon)
 
@@ -104,29 +103,39 @@ func validate() (string, error) {
 //process is the manager method
 func (sum *summon) process() error {
 
-	wg := &sync.WaitGroup{}
+	//pwg is the progressbar waitgroup
+	wg, pWg := &sync.WaitGroup{}, &sync.WaitGroup{}
 
-	if sum.isResume {
-		sum.resumeDownload(wg)
-	} else {
-		if err := sum.download(wg); err != nil {
-			return err
-		}
+	if err := sum.getDownloader()(wg); err != nil {
+		return err
 	}
 
 	stop := make(chan struct{})
 
+	pWg.Add(1)
 	//Keep Printing Progress
-	go sum.startProgressBar(stop)
+	go sum.startProgressBar(pWg, stop)
 	wg.Wait()
 
 	stop <- struct{}{}
+
+	//Wait for progressbar function to stop
+	pWg.Wait()
 
 	if sum.err != nil {
 		return sum.err
 	}
 
 	return sum.combineChunks()
+}
+
+func (sum *summon) getDownloader() downloader {
+
+	if sum.isResume {
+		return sum.resumeDownload
+	}
+
+	return sum.download
 }
 
 func (sum summon) getTempFileName(index, start, end uint32) (string, error) {
@@ -189,6 +198,8 @@ func (sum *summon) setFileDir() {
 //combineChunks will combine the chunks in ordered fashion starting from 1
 func (sum *summon) combineChunks() error {
 
+	LogWriter.Printf("Combining the files...")
+
 	var w int64
 	//maps are not ordered hence using for loop
 	for i := uint32(0); i < uint32(len(sum.fileDetails.chunks)); i++ {
@@ -196,17 +207,20 @@ func (sum *summon) combineChunks() error {
 		handle.Seek(0, 0) //We need to seek because read and write cursor are same and the cursor would be at the end.
 		written, err := io.Copy(sum.fileDetails.tempOutFile, handle)
 		if err != nil {
-			return err
+			return fmt.Errorf("error occured while copying to temp file : %v", err)
 		}
 		w += written
 	}
 
 	tempFileName := sum.fileDetails.tempOutFile.Name()
 
-	log.Printf("Wrote to Temp File : %v, Written bytes : %v", tempFileName, w)
-	sum.fileDetails.tempOutFile.Close()
+	LogWriter.Printf("Wrote to Temp File : %v, Written bytes : %v", tempFileName, w)
 
-	finalFileName := filepath.Dir(sum.fileDetails.absolutePath) + sum.separator + sum.fileDetails.fileName
+	LogWriter.Printf("Closing the temp file : %v, error : %v", tempFileName, sum.fileDetails.tempOutFile.Close())
+
+	finalFileName := sum.fileDetails.fileDir + sum.separator + sum.fileDetails.fileName
+
+	LogWriter.Printf("Renaming File from : %v to %v", tempFileName, finalFileName)
 
 	if err := os.Rename(tempFileName, finalFileName); err != nil {
 		return fmt.Errorf("error occured while renaming file : %v", err)
@@ -216,30 +230,44 @@ func (sum *summon) combineChunks() error {
 }
 
 //downloadFileForRange will download the file for the provided range and set the bytes to the chunk map, will set summor.error field if error occurs
-func (sum *summon) downloadFileForRange(wg *sync.WaitGroup, u, r string, index uint32, handle io.Writer) {
+func (sum *summon) downloadFileForRange(wg *sync.WaitGroup, r string, index uint32, handle io.Writer) {
 
+	LogWriter.Printf("Downloading for range : %s , for index : %d", r, index)
 	defer wg.Done()
 
-	request, err := http.NewRequest("GET", u, strings.NewReader(""))
+	request, err := http.NewRequest("GET", sum.uri, strings.NewReader(""))
 	if err != nil {
+		sum.Lock()
 		sum.err = err
+		sum.Unlock()
 		return
 	}
 
 	request.Header.Add("Range", "bytes="+r)
 
-	sc, err := sum.getDataAndWriteToFile(request, handle, index)
+	client := http.Client{Timeout: 0}
+
+	response, err := client.Do(request)
 	if err != nil {
+		sum.Lock()
 		sum.err = err
+		sum.Unlock()
 		return
 	}
 
 	//206 = Partial Content
-	if sc != 200 && sc != 206 {
+	if response.StatusCode != 200 && response.StatusCode != 206 {
 		sum.Lock()
-		sum.err = fmt.Errorf("Did not get 20X status code, got : %v", sc)
+		sum.err = fmt.Errorf("Did not get 20X status code, got : %v", response.StatusCode)
 		sum.Unlock()
 		log.Println(sum.err)
+		return
+	}
+
+	if err := sum.getDataAndWriteToFile(response.Body, handle, index); err != nil {
+		sum.Lock()
+		sum.err = err
+		sum.Unlock()
 		return
 	}
 
@@ -301,42 +329,33 @@ func doAPICall(request *http.Request) (int, http.Header, []byte, error) {
 }
 
 //getDataAndWriteToFile will get the response and write to file
-func (sum *summon) getDataAndWriteToFile(request *http.Request, f io.Writer, index uint32) (int, error) {
+func (sum *summon) getDataAndWriteToFile(body io.ReadCloser, f io.Writer, index uint32) error {
 
-	client := http.Client{
-		Timeout: 0,
-	}
-
-	response, err := client.Do(request)
-	if err != nil {
-		return response.StatusCode, fmt.Errorf("Error while doing request : %v", err)
-	}
-	defer response.Body.Close()
+	defer body.Close()
 
 	//we make buffer of 500 bytes and try to read 500 bytes every iteration.
 	var buf = make([]byte, 500)
-	var readTotal uint32
 
 	for {
 		select {
-		case cErr := <-sum.stop:
-			return response.StatusCode, cErr
+		case <-sum.stop:
+			return ErrGracefulShutdown
 		default:
-			err := sum.readBody(response, f, buf, &readTotal, index)
+			err := sum.readBody(body, f, buf, index)
 			if err == io.EOF {
-				return response.StatusCode, nil
+				return nil
 			}
 
 			if err != nil {
-				return response.StatusCode, err
+				return err
 			}
 		}
 	}
 }
 
-func (sum *summon) readBody(response *http.Response, f io.Writer, buf []byte, readTotal *uint32, index uint32) error {
+func (sum *summon) readBody(body io.Reader, f io.Writer, buf []byte, index uint32) error {
 
-	r, err := response.Body.Read(buf)
+	r, err := body.Read(buf)
 
 	if r > 0 {
 		f.Write(buf[:r])
@@ -346,10 +365,8 @@ func (sum *summon) readBody(response *http.Response, f io.Writer, buf []byte, re
 		return err
 	}
 
-	*readTotal += uint32(r)
-
 	sum.progressBar.Lock()
-	sum.progressBar.p[index].curr = *readTotal
+	sum.progressBar.p[index].curr += uint32(r)
 	sum.progressBar.Unlock()
 
 	return nil

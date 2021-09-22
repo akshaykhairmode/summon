@@ -18,7 +18,9 @@ type progress struct {
 	total uint32 //total bytes which we are supposed to read
 }
 
-func (sum *summon) startProgressBar(stop chan struct{}) {
+func (sum *summon) startProgressBar(wg *sync.WaitGroup, stop chan struct{}) {
+
+	defer wg.Done()
 
 	ticker := time.NewTicker(time.Second)
 	defer ticker.Stop()
