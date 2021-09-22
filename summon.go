@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"flag"
 	"fmt"
 	"io"
@@ -10,28 +11,32 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
 )
 
 type summon struct {
-	concurrency   int               //No. of connections
-	uri           string            //URL of the file we want to download
-	chunks        map[int]*os.File  //Map of part files we are creating
-	resume        map[int]int64     //how much is downloaded
-	isResume      bool              //is this a resume request
-	err           error             //used when error occurs inside a goroutine
-	startTime     time.Time         //to track time took
-	fileName      string            //name of the file we are downloading
-	absolutePath  string            //absolute path of the output file
-	tempOut       *os.File          //output / downloaded file
-	progressBar   map[int]*progress //index => progress
-	stop          chan error        //to handle stop signals from terminal
-	meta          *os.File          //to store the metadata information for resume purpose
-	separator     string            //store the path separator based on the OS
-	*sync.RWMutex                   //mutex to lock the maps which accessing it concurrently
+	concurrency   uint32      //No. of connections
+	uri           string      //URL of the file we want to download
+	isResume      bool        //is this a resume request
+	err           error       //used when error occurs inside a goroutine
+	startTime     time.Time   //to track time took
+	fileDetails   fileDetails //will hold the file related details
+	progressBar   progressBar //index => progress
+	stop          chan error  //to handle stop signals from terminal
+	separator     string      //store the path separator based on the OS
+	*sync.RWMutex             //mutex to lock the maps which accessing it concurrently
+}
+
+type fileDetails struct {
+	chunks        map[uint32]*os.File //Map of part files we are creating
+	fileName      string              //name of the file we are downloading
+	fileDir       string              //dir of the file
+	absolutePath  string              //absolute path of the output file
+	tempOutFile   *os.File            //output / downloaded file
+	resume        map[uint32]resume   //how much is downloaded
+	contentLength uint32
 }
 
 func NewSummon() (*summon, error) {
@@ -59,16 +64,20 @@ func NewSummon() (*summon, error) {
 		return sum, err
 	}
 
-	sum.setConcurrency(args.connections)
-	sum.setAbsolutePath(args.outputFile)
 	sum.uri = fileURL
-	sum.chunks = make(map[int]*os.File)
+	sum.fileDetails.chunks = make(map[uint32]*os.File)
 	sum.startTime = time.Now()
-	sum.fileName = filepath.Base(sum.uri)
+	sum.fileDetails.fileName = filepath.Base(sum.uri)
 	sum.RWMutex = &sync.RWMutex{}
-	sum.progressBar = make(map[int]*progress)
+	sum.progressBar.RWMutex = &sync.RWMutex{}
+	sum.progressBar.p = make(map[uint32]*progress)
 	sum.stop = make(chan error)
 	sum.separator = string(os.PathSeparator)
+	sum.fileDetails.resume = make(map[uint32]resume)
+
+	sum.setConcurrency(args.connections)
+	sum.setAbsolutePath(args.outputFile)
+	sum.setFileDir()
 
 	if err := sum.createTempOutputFile(); err != nil {
 		return nil, err
@@ -93,37 +102,16 @@ func validate() (string, error) {
 }
 
 //process is the manager method
-func (sum *summon) process(contentLength int) error {
-
-	//Close the output file after everything is done
-	defer sum.tempOut.Close()
-
-	split := contentLength / sum.concurrency
+func (sum *summon) process() error {
 
 	wg := &sync.WaitGroup{}
-	index := 0
 
-	for i := 0; i < contentLength; i += split + 1 {
-		j := i + split
-		if j > contentLength {
-			j = contentLength
-		}
-
-		partFileName := fmt.Sprintf("%s%s.%s.summonp_%d", filepath.Dir(sum.absolutePath), sum.separator, sum.fileName, index)
-
-		f, err := os.Create(partFileName)
-		if err != nil {
+	if sum.isResume {
+		sum.resumeDownload(wg)
+	} else {
+		if err := sum.download(wg); err != nil {
 			return err
 		}
-		defer f.Close()
-		defer os.Remove(f.Name())
-
-		sum.chunks[index] = f
-		sum.progressBar[index] = &progress{curr: 0, total: j - i}
-
-		wg.Add(1)
-		go sum.downloadFileForRange(wg, sum.uri, strconv.Itoa(i)+"-"+strconv.Itoa(j), index, f)
-		index++
 	}
 
 	stop := make(chan struct{})
@@ -135,15 +123,27 @@ func (sum *summon) process(contentLength int) error {
 	stop <- struct{}{}
 
 	if sum.err != nil {
-		os.Remove(sum.tempOut.Name())
 		return sum.err
 	}
 
 	return sum.combineChunks()
 }
 
+func (sum summon) getTempFileName(index, start, end uint32) (string, error) {
+
+	meta := fmt.Sprintf("%d#%d#%d", index, start, end)
+
+	encoded := bytes.NewBuffer(nil)
+	if err := encode(meta, encoded); err != nil {
+		return "", err
+	}
+
+	return fmt.Sprintf("%s%s.%s.sump_%s", sum.fileDetails.fileDir, sum.separator, sum.fileDetails.fileName, encoded.String()), nil
+
+}
+
 //setConcurrency set the concurrency as per min and max
-func (sum *summon) setConcurrency(c int) {
+func (sum *summon) setConcurrency(c uint32) {
 
 	//We use default connections in case no concurrency is passed
 	if c <= 0 {
@@ -162,8 +162,12 @@ func (sum *summon) setConcurrency(c int) {
 
 func (sum *summon) setAbsolutePath(opath string) error {
 
+	if opath == "" {
+		opath = filepath.Base(sum.uri)
+	}
+
 	if filepath.IsAbs(opath) {
-		sum.absolutePath = opath
+		sum.fileDetails.absolutePath = opath
 		return nil
 	}
 
@@ -173,9 +177,13 @@ func (sum *summon) setAbsolutePath(opath string) error {
 		return err
 	}
 
-	sum.absolutePath = absPath
+	sum.fileDetails.absolutePath = absPath
 
 	return nil
+}
+
+func (sum *summon) setFileDir() {
+	sum.fileDetails.fileDir = filepath.Dir(sum.fileDetails.absolutePath)
 }
 
 //combineChunks will combine the chunks in ordered fashion starting from 1
@@ -183,23 +191,32 @@ func (sum *summon) combineChunks() error {
 
 	var w int64
 	//maps are not ordered hence using for loop
-	for i := 0; i < len(sum.chunks); i++ {
-		handle := sum.chunks[i]
+	for i := uint32(0); i < uint32(len(sum.fileDetails.chunks)); i++ {
+		handle := sum.fileDetails.chunks[i]
 		handle.Seek(0, 0) //We need to seek because read and write cursor are same and the cursor would be at the end.
-		written, err := io.Copy(sum.tempOut, handle)
+		written, err := io.Copy(sum.fileDetails.tempOutFile, handle)
 		if err != nil {
 			return err
 		}
 		w += written
 	}
 
-	log.Printf("Wrote to File : %v, Written bytes : %v", sum.tempOut.Name(), w)
+	tempFileName := sum.fileDetails.tempOutFile.Name()
+
+	log.Printf("Wrote to Temp File : %v, Written bytes : %v", tempFileName, w)
+	sum.fileDetails.tempOutFile.Close()
+
+	finalFileName := filepath.Dir(sum.fileDetails.absolutePath) + sum.separator + sum.fileDetails.fileName
+
+	if err := os.Rename(tempFileName, finalFileName); err != nil {
+		return fmt.Errorf("error occured while renaming file : %v", err)
+	}
 
 	return nil
 }
 
 //downloadFileForRange will download the file for the provided range and set the bytes to the chunk map, will set summor.error field if error occurs
-func (sum *summon) downloadFileForRange(wg *sync.WaitGroup, u, r string, index int, handle io.Writer) {
+func (sum *summon) downloadFileForRange(wg *sync.WaitGroup, u, r string, index uint32, handle io.Writer) {
 
 	defer wg.Done()
 
@@ -229,7 +246,7 @@ func (sum *summon) downloadFileForRange(wg *sync.WaitGroup, u, r string, index i
 }
 
 //getRangeDetails returns ifRangeIsSupported,statuscode,error
-func getRangeDetails(u string) (bool, int, error) {
+func getRangeDetails(u string) (bool, uint32, error) {
 
 	request, err := http.NewRequest("HEAD", u, strings.NewReader(""))
 	if err != nil {
@@ -246,17 +263,18 @@ func getRangeDetails(u string) (bool, int, error) {
 	}
 
 	conLen := headers.Get("Content-Length")
-	cl, err := strconv.Atoi(conLen)
+
+	cl, err := parseUint32(conLen)
 	if err != nil {
 		return false, 0, fmt.Errorf("Error Parsing content length : %v", err)
 	}
 
 	//Accept-Ranges: bytes
 	if headers.Get("Accept-Ranges") == "bytes" {
-		return true, cl, nil
+		return true, cl[0], nil
 	}
 
-	return false, cl, nil
+	return false, cl[0], nil
 
 }
 
@@ -283,7 +301,7 @@ func doAPICall(request *http.Request) (int, http.Header, []byte, error) {
 }
 
 //getDataAndWriteToFile will get the response and write to file
-func (sum *summon) getDataAndWriteToFile(request *http.Request, f io.Writer, index int) (int, error) {
+func (sum *summon) getDataAndWriteToFile(request *http.Request, f io.Writer, index uint32) (int, error) {
 
 	client := http.Client{
 		Timeout: 0,
@@ -297,7 +315,7 @@ func (sum *summon) getDataAndWriteToFile(request *http.Request, f io.Writer, ind
 
 	//we make buffer of 500 bytes and try to read 500 bytes every iteration.
 	var buf = make([]byte, 500)
-	var readTotal int
+	var readTotal uint32
 
 	for {
 		select {
@@ -316,7 +334,7 @@ func (sum *summon) getDataAndWriteToFile(request *http.Request, f io.Writer, ind
 	}
 }
 
-func (sum *summon) readBody(response *http.Response, f io.Writer, buf []byte, readTotal *int, index int) error {
+func (sum *summon) readBody(response *http.Response, f io.Writer, buf []byte, readTotal *uint32, index uint32) error {
 
 	r, err := response.Body.Read(buf)
 
@@ -328,11 +346,11 @@ func (sum *summon) readBody(response *http.Response, f io.Writer, buf []byte, re
 		return err
 	}
 
-	*readTotal += r
+	*readTotal += uint32(r)
 
-	sum.Lock()
-	sum.progressBar[index].curr = *readTotal
-	sum.Unlock()
+	sum.progressBar.Lock()
+	sum.progressBar.p[index].curr = *readTotal
+	sum.progressBar.Unlock()
 
 	return nil
 }

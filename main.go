@@ -39,6 +39,12 @@ func main() {
 		log.Fatalf("ERROR : %s", err)
 	}
 
+	for _, f := range sum.fileDetails.chunks {
+		file := f.Name()
+		f.Close()
+		os.Remove(file)
+	}
+
 	log.Printf("Time took : %v", time.Since(sum.startTime))
 
 }
@@ -51,7 +57,9 @@ func (sum *summon) run() error {
 		return err
 	}
 
-	if !isSupported {
+	sum.fileDetails.contentLength = contentLength
+
+	if !isSupported && !sum.isResume {
 		sum.concurrency = 1
 	}
 
@@ -59,7 +67,7 @@ func (sum *summon) run() error {
 	log.Printf("Got Content Length : %v", contentLength)
 	log.Printf("Using %v connections", sum.concurrency)
 
-	return sum.process(contentLength)
+	return sum.process()
 
 }
 
@@ -72,7 +80,7 @@ func (sum *summon) catchSignals() {
 		syscall.SIGQUIT)
 	go func() {
 		s := <-sigc
-		for i := 0; i < len(sum.chunks); i++ {
+		for i := 0; i < len(sum.fileDetails.chunks); i++ {
 			sum.stop <- fmt.Errorf("got stop signal : %v", s)
 		}
 	}()

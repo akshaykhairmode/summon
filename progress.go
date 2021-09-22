@@ -4,12 +4,18 @@ import (
 	"fmt"
 	"math"
 	"strings"
+	"sync"
 	"time"
 )
 
+type progressBar struct {
+	p map[uint32]*progress
+	*sync.RWMutex
+}
+
 type progress struct {
-	curr  int //curr is the current read till now
-	total int //total bytes which we are supposed to read
+	curr  uint32 //curr is the current read till now
+	total uint32 //total bytes which we are supposed to read
 }
 
 func (sum *summon) startProgressBar(stop chan struct{}) {
@@ -20,25 +26,25 @@ func (sum *summon) startProgressBar(stop chan struct{}) {
 	for {
 		select {
 		case <-ticker.C:
-			for i := 0; i < len(sum.progressBar); i++ {
+			for i := uint32(0); i < uint32(len(sum.progressBar.p)); i++ {
 
-				sum.RLock()
-				p := *sum.progressBar[i]
-				sum.RUnlock()
+				sum.progressBar.RLock()
+				p := *sum.progressBar.p[i]
+				sum.progressBar.RUnlock()
 
 				printProgress(i, p)
 			}
 
 			//Move cursor back
-			for i := 0; i < len(sum.progressBar); i++ {
+			for i := 0; i < len(sum.progressBar.p); i++ {
 				fmt.Print("\033[F")
 			}
 
 		case <-stop:
-			for i := 0; i < len(sum.progressBar); i++ {
-				sum.RLock()
-				p := *sum.progressBar[i]
-				sum.RUnlock()
+			for i := uint32(0); i < uint32(len(sum.progressBar.p)); i++ {
+				sum.progressBar.RLock()
+				p := *sum.progressBar.p[i]
+				sum.progressBar.RUnlock()
 				printProgress(i, p)
 			}
 			return
@@ -47,7 +53,7 @@ func (sum *summon) startProgressBar(stop chan struct{}) {
 
 }
 
-func printProgress(index int, p progress) {
+func printProgress(index uint32, p progress) {
 
 	s := strings.Builder{}
 
