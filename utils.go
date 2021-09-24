@@ -1,13 +1,13 @@
 package main
 
 import (
+	"bytes"
 	"encoding/base64"
 	"flag"
 	"io"
 	"log"
 	"os"
 	"strconv"
-	"strings"
 )
 
 type arguments struct {
@@ -41,11 +41,11 @@ func parseFlags(args *arguments) {
 
 }
 
-func encode(s string, w io.Writer) error {
+func encode(b []byte, w io.Writer) error {
 
 	enc := base64.NewEncoder(base64.StdEncoding, w)
 	defer enc.Close()
-	_, err := enc.Write([]byte(s))
+	_, err := enc.Write(b)
 	if err != nil {
 		return err
 	}
@@ -54,17 +54,17 @@ func encode(s string, w io.Writer) error {
 
 }
 
-func decode(s string) (string, error) {
+func decode(b []byte) ([]byte, error) {
 
-	r := strings.NewReader(s)
-	out := make([]byte, len(s))
+	r := bytes.NewReader(b)
+	out := make([]byte, len(b))
 	dec := base64.NewDecoder(base64.StdEncoding, r)
 	n, err := dec.Read(out)
 	if err != nil {
-		return "", err
+		return out, err
 	}
 
-	return string(out[:n]), nil
+	return out[:n], nil
 }
 
 func parseUint32(s ...string) ([]uint32, error) {

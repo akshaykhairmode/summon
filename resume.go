@@ -1,10 +1,10 @@
 package main
 
 import (
+	"bytes"
+	"encoding/json"
 	"fmt"
 	"os"
-	"path/filepath"
-	"strings"
 	"sync"
 )
 
@@ -15,47 +15,64 @@ type resume struct {
 	tempFilePath string
 }
 
+type meta struct {
+	ChunkPaths map[uint32]string   `json:"chunkPaths"` //Key is index & value is absolute path of chunk
+	Range      map[uint32][]uint32 `json:"range"`      //Key is index & value is the initial range which was used. 0 being start and 1 being the end
+}
+
+//getMetaData will read the meta file and return the meta struct
+func (sum *summon) setMetaData(fpath string) error {
+
+	fname := sum.getMetaFileName()
+	meta := meta{}
+
+	data, err := os.ReadFile(fname)
+	if err != nil {
+		return err
+	}
+
+	decoded, err := decode(data)
+	if err != nil {
+		return err
+	}
+
+	if err := json.Unmarshal(decoded, &meta); err != nil {
+		return err
+	}
+
+	sum.metaData = meta
+
+	return nil
+}
+
+func (sum summon) getMetaFileName() string {
+	return sum.fileDetails.fileDir + sum.separator + "." + sum.fileDetails.fileName + ".summon.meta"
+}
+
 //canBeResumed tells us if the file can be resumed
 func (sum *summon) canBeResumed(fpath string) (bool, []string) {
 
-	dir := filepath.Dir(fpath)
+	if err := sum.setMetaData(fpath); err != nil {
+		return false, []string{}
+	}
 
-	parts, _ := filepath.Glob(dir + sum.separator + "." + sum.fileDetails.fileName + "*sump*")
+	parts := []string{}
 
-	for _, absPath := range parts {
+	for index, filePath := range sum.metaData.ChunkPaths {
 
-		spl := strings.Split(absPath, "_")
+		start, end := sum.metaData.Range[index][0], sum.metaData.Range[index][1]
 
-		encData := spl[len(spl)-1]
-
-		decData, err := decode(encData)
+		finfo, err := os.Stat(filePath)
 		if err != nil {
 			LogWriter.Println(err)
 			return false, parts
 		}
 
-		resumeVals := strings.Split(decData, "#")
-
-		metaData, err := parseUint32(resumeVals[0], resumeVals[1], resumeVals[2])
-		if err != nil {
-			LogWriter.Println(err)
-			return false, parts
-		}
-
-		index, start, end := metaData[0], metaData[1], metaData[2]
-
-		LogWriter.Printf("Read Meta Data for index : %d, start : %d, end : %d", index, start, end)
-
-		finfo, err := os.Stat(absPath)
-		if err != nil {
-			LogWriter.Println(err)
-			return false, parts
-		}
-
+		//This size is in bytes
 		contentL := finfo.Size()
 
 		sum.fileDetails.chunks[index] = nil
-		sum.fileDetails.resume[index] = resume{downloaded: uint32(contentL), end: end, start: start, tempFilePath: absPath}
+		sum.fileDetails.resume[index] = resume{downloaded: uint32(contentL), end: end, start: start, tempFilePath: filePath}
 	}
 
 	return true, parts
@@ -65,23 +82,34 @@ func (sum *summon) resumeDownload(wg *sync.WaitGroup) error {
 
 	for index := range sum.fileDetails.chunks {
 
-		//The previous start range + the bytes we have downloaded will + 1 will give us the new range
-		start := sum.fileDetails.resume[index].start + sum.fileDetails.resume[index].downloaded + 1
+		var start, end, total uint32
+
+		//The previous start range + the bytes we have downloaded will give us the new range
+		start = sum.fileDetails.resume[index].start + sum.fileDetails.resume[index].downloaded
+
 		//We will use the same end here as we are going to use same concurrency
-		end := sum.fileDetails.resume[index].end
+		end = sum.fileDetails.resume[index].end
+
 		//We need to use the old total value only
-		total := sum.fileDetails.resume[index].end - sum.fileDetails.resume[index].start
+		total = sum.fileDetails.resume[index].end - sum.fileDetails.resume[index].start
+
 		//We will start the progress from last time, so we set the current progress directly
 		sum.progressBar.p[index] = &progress{curr: sum.fileDetails.resume[index].downloaded, total: total}
-
-		LogWriter.Printf("Resume Details - Start : %d , End : %d, Total : %d for index : %v", start, end, total, index)
-
-		contentRange := fmt.Sprintf("%d-%d", start, end)
 
 		f, err := os.OpenFile(sum.fileDetails.resume[index].tempFilePath, os.O_RDWR|os.O_APPEND, 0644)
 		if err != nil {
 			return err
 		}
+
+		//Set the file handles so that combine can use them
+		sum.fileDetails.chunks[index] = f
+
+		//If chunk is already completed skip download
+		if start > sum.fileDetails.resume[index].end {
+			continue
+		}
+
+		contentRange := fmt.Sprintf("%d-%d", start, end)
 
 		wg.Add(1)
 		go sum.downloadFileForRange(wg, contentRange, index, f)
@@ -94,6 +122,8 @@ func (sum *summon) download(wg *sync.WaitGroup) error {
 
 	index := uint32(0)
 	split := sum.fileDetails.contentLength / sum.concurrency
+	meta := meta{ChunkPaths: make(map[uint32]string), Range: make(map[uint32][]uint32)}
+
 	for start := uint32(0); start < sum.fileDetails.contentLength; start += split + 1 {
 		end := start + split
 		if end > sum.fileDetails.contentLength {
@@ -112,6 +142,10 @@ func (sum *summon) download(wg *sync.WaitGroup) error {
 			return err
 		}
 
+		//Set metadata
+		meta.ChunkPaths[index] = f.Name()
+		meta.Range[index] = []uint32{start, end}
+
 		//init progressbar
 		sum.progressBar.p[index] = &progress{curr: 0, total: end - start}
 
@@ -125,46 +159,55 @@ func (sum *summon) download(wg *sync.WaitGroup) error {
 		index++
 	}
 
+	//Add metadata to file
+	metaFname := sum.getMetaFileName()
+	metaData, err := json.Marshal(meta)
+	if err != nil {
+		LogWriter.Printf("Error occured while marshalling json : %v", err)
+	}
+
+	finalData := bytes.NewBuffer(nil)
+	if err := encode(metaData, finalData); err != nil {
+		LogWriter.Printf("Error occured while encoding meta data : %v", err)
+	}
+
+	if err := os.WriteFile(metaFname, finalData.Bytes(), 0644); err != nil {
+		LogWriter.Printf("Error occured while writing meta data : %v", err)
+	}
+
 	return nil
 
 }
 
-func (sum *summon) cleanUp(chunks map[uint32]*os.File, tempFileName ...string) error {
+//deleteFiles deletes the list of files provided
+func (sum *summon) deleteFiles(chunks map[uint32]*os.File, tempFileName ...string) error {
 
 	for _, handle := range chunks {
-
 		if handle == nil {
 			continue
 		}
-
-		handle.Close()
-
-		if err := os.Remove(handle.Name()); err != nil {
-			return err
-		}
+		LogWriter.Printf("Removing file : %v, Err : %v", handle.Name(), os.Remove(handle.Name()))
 	}
 
 	for _, temp := range tempFileName {
-
-		LogWriter.Printf("Removing file : %v", temp)
 
 		if !fileExists(temp) {
 			continue
 		}
 
-		os.Remove(temp)
+		LogWriter.Printf("Removing file : %v, Err : %v", temp, os.Remove(temp))
 
 	}
 
 	return nil
 }
 
-//createTempOutputFile ...
+//createTempOutputFile will create the final output file
 func (sum *summon) createTempOutputFile() error {
 
 	//Check if file already exists with same name
 	if fileExists(sum.fileDetails.absolutePath) {
-		return fmt.Errorf("File :%v already exists", sum.fileDetails.absolutePath)
+		return fmt.Errorf("File : %v already exists", sum.fileDetails.absolutePath)
 	}
 
 	tempOutFileName := sum.fileDetails.fileDir + sum.separator + "." + sum.fileDetails.fileName
@@ -172,7 +215,7 @@ func (sum *summon) createTempOutputFile() error {
 	if fileExists(tempOutFileName) {
 		if isValid, parts := sum.canBeResumed(tempOutFileName); isValid {
 			var shouldResume string
-			fmt.Print("Looks like previous download was incomplete for this file, do you want to resume ? [Y/n]")
+			fmt.Print("Looks like previous download was incomplete for this file, do you want to resume ? [Y/n] ")
 			_, err := fmt.Scanln(&shouldResume)
 			if err != nil {
 				return err
@@ -182,7 +225,8 @@ func (sum *summon) createTempOutputFile() error {
 				sum.isResume = true
 				sum.concurrency = uint32(len(sum.fileDetails.chunks))
 			} else {
-				if err := sum.cleanUp(sum.fileDetails.chunks, append(parts, tempOutFileName)...); err != nil {
+				//Delete Temp file and chunks both
+				if err := sum.deleteFiles(map[uint32]*os.File{}, append(parts, tempOutFileName, sum.getMetaFileName())...); err != nil {
 					return err
 				}
 			}

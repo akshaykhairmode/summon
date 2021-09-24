@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bytes"
 	"flag"
 	"fmt"
 	"io"
@@ -25,6 +24,7 @@ type summon struct {
 	err           error       //used when error occurs inside a goroutine
 	startTime     time.Time   //to track time took
 	fileDetails   fileDetails //will hold the file related details
+	metaData      meta        //Will hold the meta data of the range and file details
 	progressBar   progressBar //index => progress
 	stop          chan error  //to handle stop signals from terminal
 	separator     string      //store the path separator based on the OS
@@ -50,7 +50,7 @@ func NewSummon() (*summon, error) {
 	if args.help {
 		flag.PrintDefaults()
 		fmt.Println("\nExample Usage - $GOBIN/summon -c 5 http://www.africau.edu/images/default/sample.pdf")
-		return nil, nil
+		os.Exit(0)
 	}
 
 	//Set logger
@@ -117,6 +117,12 @@ func (sum *summon) process() error {
 	go sum.startProgressBar(pWg, stop)
 	wg.Wait()
 
+	//Defer file closing
+	defer sum.fileDetails.tempOutFile.Close()
+	for _, f := range sum.fileDetails.chunks {
+		defer f.Close()
+	}
+
 	stop <- struct{}{}
 
 	//Wait for progressbar function to stop
@@ -140,14 +146,7 @@ func (sum *summon) getDownloader() downloader {
 
 func (sum summon) getTempFileName(index, start, end uint32) (string, error) {
 
-	meta := fmt.Sprintf("%d#%d#%d", index, start, end)
-
-	encoded := bytes.NewBuffer(nil)
-	if err := encode(meta, encoded); err != nil {
-		return "", err
-	}
-
-	return fmt.Sprintf("%s%s.%s.sump_%s", sum.fileDetails.fileDir, sum.separator, sum.fileDetails.fileName, encoded.String()), nil
+	return fmt.Sprintf("%s%s.%s.sump%d", sum.fileDetails.fileDir, sum.separator, sum.fileDetails.fileName, index), nil
 
 }
 
@@ -204,6 +203,11 @@ func (sum *summon) combineChunks() error {
 	//maps are not ordered hence using for loop
 	for i := uint32(0); i < uint32(len(sum.fileDetails.chunks)); i++ {
 		handle := sum.fileDetails.chunks[i]
+
+		if handle == nil {
+			return fmt.Errorf("Got chunk handle nil")
+		}
+
 		handle.Seek(0, 0) //We need to seek because read and write cursor are same and the cursor would be at the end.
 		written, err := io.Copy(sum.fileDetails.tempOutFile, handle)
 		if err != nil {
@@ -215,8 +219,6 @@ func (sum *summon) combineChunks() error {
 	tempFileName := sum.fileDetails.tempOutFile.Name()
 
 	LogWriter.Printf("Wrote to Temp File : %v, Written bytes : %v", tempFileName, w)
-
-	LogWriter.Printf("Closing the temp file : %v, error : %v", tempFileName, sum.fileDetails.tempOutFile.Close())
 
 	finalFileName := sum.fileDetails.fileDir + sum.separator + sum.fileDetails.fileName
 

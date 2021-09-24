@@ -26,13 +26,11 @@ var ErrGracefulShutdown = errors.New("Got Stop Signal")
 
 func main() {
 
+	defer recoverMain()
+
 	sum, err := NewSummon()
 	if err != nil {
 		log.Fatalf("ERROR : %s", err)
-	}
-
-	if sum == nil {
-		return
 	}
 
 	//get the user kill signals
@@ -67,14 +65,14 @@ func (sum *summon) run() error {
 	err = sum.process()
 
 	if err == nil {
-		LogWriter.Printf("Cleaning Up, Error : %v", err)
-		return sum.cleanUp(sum.fileDetails.chunks)
+		LogWriter.Printf("Success, Now Cleaning Up")
+		return sum.deleteFiles(sum.fileDetails.chunks, sum.getMetaFileName())
 	}
 
-	//If its a graceful shutdown we can resume it later so we dont want to delete the files
+	//if there was some error we will delete the files except unless its gracefully stopped
 	if err != ErrGracefulShutdown {
-		LogWriter.Printf("Cleaning Up, Error : %v", err)
-		return sum.cleanUp(sum.fileDetails.chunks, sum.fileDetails.tempOutFile.Name())
+		LogWriter.Printf("Some error occured Cleaning Up, Error : %v", err)
+		return sum.deleteFiles(sum.fileDetails.chunks, sum.fileDetails.tempOutFile.Name(), sum.getMetaFileName())
 	}
 
 	return nil
@@ -94,4 +92,10 @@ func (sum *summon) catchSignals() {
 			sum.stop <- fmt.Errorf("got stop signal : %v", s)
 		}
 	}()
+}
+
+func recoverMain() {
+	if err := recover(); err != nil {
+		LogWriter.Printf("Recovered Error : %v", err)
+	}
 }
