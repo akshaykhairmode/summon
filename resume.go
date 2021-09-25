@@ -20,7 +20,7 @@ type meta struct {
 	Range      map[int64][]int64 `json:"range"`      //Key is index & value is the initial range which was used. 0 being start and 1 being the end
 }
 
-//getMetaData will read the meta file and return the meta struct
+//getMetaData will set the meta data to summon
 func (sum *summon) setMetaData(fpath string) error {
 
 	fname := sum.getMetaFileName()
