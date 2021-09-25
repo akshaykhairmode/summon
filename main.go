@@ -52,6 +52,11 @@ func (sum *summon) run() error {
 		return err
 	}
 
+	//If overflows we error out, uint32 only supports till 4294967295, if we get range bigger than this we cant use uint32
+	if contentLength > 4294967295 {
+		return fmt.Errorf("File too big, unable to proceed")
+	}
+
 	sum.fileDetails.contentLength = contentLength
 
 	if !isSupported && !sum.isResume {

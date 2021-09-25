@@ -52,6 +52,12 @@ func (sum summon) getMetaFileName() string {
 //canBeResumed tells us if the file can be resumed
 func (sum *summon) canBeResumed(fpath string) (bool, []string) {
 
+	//If meta file does not exist we cant resume the download
+	if !fileExists(sum.getMetaFileName()) {
+		return false, []string{}
+	}
+
+	//Set the metadata
 	if err := sum.setMetaData(fpath); err != nil {
 		return false, []string{}
 	}
@@ -212,23 +218,21 @@ func (sum *summon) createTempOutputFile() error {
 
 	tempOutFileName := sum.fileDetails.fileDir + sum.separator + "." + sum.fileDetails.fileName
 
-	if fileExists(tempOutFileName) {
-		if isValid, parts := sum.canBeResumed(tempOutFileName); isValid {
-			var shouldResume string
-			fmt.Print("Looks like previous download was incomplete for this file, do you want to resume ? [Y/n] ")
-			_, err := fmt.Scanln(&shouldResume)
-			if err != nil {
-				return err
-			}
+	if isValid, parts := sum.canBeResumed(tempOutFileName); isValid {
+		var shouldResume string
+		fmt.Print("Looks like previous download was incomplete for this file, do you want to resume ? [Y/n] ")
+		_, err := fmt.Scanln(&shouldResume)
+		if err != nil {
+			return err
+		}
 
-			if shouldResume == "Y" {
-				sum.isResume = true
-				sum.concurrency = uint32(len(sum.fileDetails.chunks))
-			} else {
-				//Delete Temp file and chunks both
-				if err := sum.deleteFiles(map[uint32]*os.File{}, append(parts, tempOutFileName, sum.getMetaFileName())...); err != nil {
-					return err
-				}
+		if shouldResume == "Y" {
+			sum.isResume = true
+			sum.concurrency = uint32(len(sum.fileDetails.chunks))
+		} else {
+			//Delete Temp file and chunks both
+			if err := sum.deleteFiles(map[uint32]*os.File{}, append(parts, tempOutFileName, sum.getMetaFileName())...); err != nil {
+				return err
 			}
 		}
 	}
