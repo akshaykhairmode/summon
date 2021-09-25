@@ -165,9 +165,20 @@ func (sum *summon) download(wg *sync.WaitGroup) error {
 		index++
 	}
 
+	if !sum.isRangeSupported {
+		return nil
+	}
+
+	sum.addMetadataToFile(meta)
+
+	return nil
+
+}
+
+func (sum summon) addMetadataToFile(m meta) {
 	//Add metadata to file
 	metaFname := sum.getMetaFileName()
-	metaData, err := json.Marshal(meta)
+	metaData, err := json.Marshal(m)
 	if err != nil {
 		LogWriter.Printf("Error occured while marshalling json : %v", err)
 	}
@@ -180,9 +191,6 @@ func (sum *summon) download(wg *sync.WaitGroup) error {
 	if err := os.WriteFile(metaFname, finalData.Bytes(), 0644); err != nil {
 		LogWriter.Printf("Error occured while writing meta data : %v", err)
 	}
-
-	return nil
-
 }
 
 //deleteFiles deletes the list of files provided

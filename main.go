@@ -53,6 +53,7 @@ func (sum *summon) run() error {
 	}
 
 	sum.fileDetails.contentLength = contentLength
+	sum.isRangeSupported = isSupported
 
 	if !isSupported && !sum.isResume {
 		sum.concurrency = 1

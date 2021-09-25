@@ -6,6 +6,7 @@ import (
 	"io"
 	"io/ioutil"
 	"log"
+	"mime"
 	"net/http"
 	"net/url"
 	"os"
@@ -18,17 +19,18 @@ import (
 type downloader func(wg *sync.WaitGroup) error
 
 type summon struct {
-	concurrency   int64       //No. of connections
-	uri           string      //URL of the file we want to download
-	isResume      bool        //is this a resume request
-	err           error       //used when error occurs inside a goroutine
-	startTime     time.Time   //to track time took
-	fileDetails   fileDetails //will hold the file related details
-	metaData      meta        //Will hold the meta data of the range and file details
-	progressBar   progressBar //index => progress
-	stop          chan error  //to handle stop signals from terminal
-	separator     string      //store the path separator based on the OS
-	*sync.RWMutex             //mutex to lock the maps which accessing it concurrently
+	concurrency      int64       //No. of connections
+	uri              string      //URL of the file we want to download
+	isResume         bool        //is this a resume request
+	isRangeSupported bool        //if this request supports range
+	err              error       //used when error occurs inside a goroutine
+	startTime        time.Time   //to track time took
+	fileDetails      fileDetails //will hold the file related details
+	metaData         meta        //Will hold the meta data of the range and file details
+	progressBar      progressBar //index => progress
+	stop             chan error  //to handle stop signals from terminal
+	separator        string      //store the path separator based on the OS
+	*sync.RWMutex                //mutex to lock the maps which accessing it concurrently
 }
 
 type fileDetails struct {
@@ -171,10 +173,25 @@ func (sum *summon) setConcurrency(c int64) {
 func (sum *summon) setAbsolutePath(opath string) error {
 
 	if opath == "" {
-		opath = filepath.Base(sum.uri)
+
+		filename, err := getFileNameFromHeaders(sum.uri)
+		if err != nil {
+			return err
+		}
+
+		if filename == "" {
+			//Get the filename from the url
+			opath = filepath.Base(sum.uri)
+		} else {
+			LogWriter.Printf("Got Filename from headers : %v", filename)
+			sum.fileDetails.fileName = filename
+			opath = filename
+		}
+
 	}
 
 	if filepath.IsAbs(opath) {
+		LogWriter.Printf("path passed is an absolute path")
 		sum.fileDetails.absolutePath = opath
 		return nil
 	}
@@ -184,6 +201,7 @@ func (sum *summon) setAbsolutePath(opath string) error {
 		LogWriter.Printf("error while getting absolute path : %v", err)
 		return err
 	}
+	LogWriter.Printf("Final absolute path is : %v", absPath)
 
 	sum.fileDetails.absolutePath = absPath
 
@@ -218,9 +236,9 @@ func (sum *summon) combineChunks() error {
 
 	tempFileName := sum.fileDetails.tempOutFile.Name()
 
-	LogWriter.Printf("Wrote to Temp File : %v, Written bytes : %v", tempFileName, w)
-
 	finalFileName := sum.fileDetails.fileDir + sum.separator + sum.fileDetails.fileName
+
+	log.Printf("Wrote to File : %v, Written bytes : %v", finalFileName, w)
 
 	LogWriter.Printf("Renaming File from : %v to %v", tempFileName, finalFileName)
 
@@ -328,6 +346,39 @@ func doAPICall(request *http.Request) (int, http.Header, []byte, error) {
 
 	return response.StatusCode, response.Header, data, nil
 
+}
+
+func getFileNameFromHeaders(u string) (string, error) {
+
+	request, err := http.NewRequest("HEAD", u, strings.NewReader(""))
+	if err != nil {
+		return "", err
+	}
+
+	sc, headers, _, err := doAPICall(request)
+	if err != nil {
+		return "", err
+	}
+
+	if sc != 200 {
+		return "", fmt.Errorf("Did not get 200 response in getFileNameFromHeaders : %v", sc)
+	}
+
+	cd := headers.Get("Content-Disposition")
+
+	//Content-Disposition is not present so filename is not there
+	if cd == "" {
+		LogWriter.Printf("getFileNameFromHeaders got content disposation empty")
+		return "", nil
+	}
+
+	_, params, err := mime.ParseMediaType(cd)
+	LogWriter.Printf("params : %v", params)
+	if err != nil {
+		return "", err
+	}
+
+	return params["filename"], nil
 }
 
 //getDataAndWriteToFile will get the response and write to file
