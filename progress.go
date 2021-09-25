@@ -9,13 +9,13 @@ import (
 )
 
 type progressBar struct {
-	p map[uint32]*progress
+	p map[int64]*progress
 	*sync.RWMutex
 }
 
 type progress struct {
-	curr  uint32 //curr is the current read till now
-	total uint32 //total bytes which we are supposed to read
+	curr  int64 //curr is the current read till now
+	total int64 //total bytes which we are supposed to read
 }
 
 func (sum *summon) startProgressBar(wg *sync.WaitGroup, stop chan struct{}) {
@@ -28,7 +28,7 @@ func (sum *summon) startProgressBar(wg *sync.WaitGroup, stop chan struct{}) {
 	for {
 		select {
 		case <-ticker.C:
-			for i := uint32(0); i < uint32(len(sum.progressBar.p)); i++ {
+			for i := int64(0); i < int64(len(sum.progressBar.p)); i++ {
 
 				sum.progressBar.RLock()
 				p := *sum.progressBar.p[i]
@@ -43,7 +43,7 @@ func (sum *summon) startProgressBar(wg *sync.WaitGroup, stop chan struct{}) {
 			}
 
 		case <-stop:
-			for i := uint32(0); i < uint32(len(sum.progressBar.p)); i++ {
+			for i := int64(0); i < int64(len(sum.progressBar.p)); i++ {
 				sum.progressBar.RLock()
 				p := *sum.progressBar.p[i]
 				sum.progressBar.RUnlock()
@@ -55,7 +55,7 @@ func (sum *summon) startProgressBar(wg *sync.WaitGroup, stop chan struct{}) {
 
 }
 
-func printProgress(index uint32, p progress) {
+func printProgress(index int64, p progress) {
 
 	s := strings.Builder{}
 

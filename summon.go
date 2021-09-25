@@ -18,7 +18,7 @@ import (
 type downloader func(wg *sync.WaitGroup) error
 
 type summon struct {
-	concurrency   uint32      //No. of connections
+	concurrency   int64       //No. of connections
 	uri           string      //URL of the file we want to download
 	isResume      bool        //is this a resume request
 	err           error       //used when error occurs inside a goroutine
@@ -32,13 +32,13 @@ type summon struct {
 }
 
 type fileDetails struct {
-	chunks        map[uint32]*os.File //Map of part files we are creating
-	fileName      string              //name of the file we are downloading
-	fileDir       string              //dir of the file
-	absolutePath  string              //absolute path of the output file
-	tempOutFile   *os.File            //output / downloaded file
-	resume        map[uint32]resume   //how much is downloaded
-	contentLength uint32
+	chunks        map[int64]*os.File //Map of part files we are creating
+	fileName      string             //name of the file we are downloading
+	fileDir       string             //dir of the file
+	absolutePath  string             //absolute path of the output file
+	tempOutFile   *os.File           //output / downloaded file
+	resume        map[int64]resume   //how much is downloaded
+	contentLength int64
 }
 
 func NewSummon() (*summon, error) {
@@ -64,15 +64,15 @@ func NewSummon() (*summon, error) {
 	}
 
 	sum.uri = fileURL
-	sum.fileDetails.chunks = make(map[uint32]*os.File)
+	sum.fileDetails.chunks = make(map[int64]*os.File)
 	sum.startTime = time.Now()
 	sum.fileDetails.fileName = filepath.Base(sum.uri)
 	sum.RWMutex = &sync.RWMutex{}
 	sum.progressBar.RWMutex = &sync.RWMutex{}
-	sum.progressBar.p = make(map[uint32]*progress)
+	sum.progressBar.p = make(map[int64]*progress)
 	sum.stop = make(chan error)
 	sum.separator = string(os.PathSeparator)
-	sum.fileDetails.resume = make(map[uint32]resume)
+	sum.fileDetails.resume = make(map[int64]resume)
 
 	sum.setConcurrency(args.connections)
 	sum.setAbsolutePath(args.outputFile)
@@ -144,14 +144,14 @@ func (sum *summon) getDownloader() downloader {
 	return sum.download
 }
 
-func (sum summon) getTempFileName(index, start, end uint32) (string, error) {
+func (sum summon) getTempFileName(index, start, end int64) (string, error) {
 
 	return fmt.Sprintf("%s%s.%s.sump%d", sum.fileDetails.fileDir, sum.separator, sum.fileDetails.fileName, index), nil
 
 }
 
 //setConcurrency set the concurrency as per min and max
-func (sum *summon) setConcurrency(c uint32) {
+func (sum *summon) setConcurrency(c int64) {
 
 	//We use default connections in case no concurrency is passed
 	if c <= 0 {
@@ -201,7 +201,7 @@ func (sum *summon) combineChunks() error {
 
 	var w int64
 	//maps are not ordered hence using for loop
-	for i := uint32(0); i < uint32(len(sum.fileDetails.chunks)); i++ {
+	for i := int64(0); i < int64(len(sum.fileDetails.chunks)); i++ {
 		handle := sum.fileDetails.chunks[i]
 
 		if handle == nil {
@@ -232,7 +232,7 @@ func (sum *summon) combineChunks() error {
 }
 
 //downloadFileForRange will download the file for the provided range and set the bytes to the chunk map, will set summor.error field if error occurs
-func (sum *summon) downloadFileForRange(wg *sync.WaitGroup, r string, index uint32, handle io.Writer) {
+func (sum *summon) downloadFileForRange(wg *sync.WaitGroup, r string, index int64, handle io.Writer) {
 
 	LogWriter.Printf("Downloading for range : %s , for index : %d", r, index)
 	defer wg.Done()
@@ -276,7 +276,7 @@ func (sum *summon) downloadFileForRange(wg *sync.WaitGroup, r string, index uint
 }
 
 //getRangeDetails returns ifRangeIsSupported,statuscode,error
-func getRangeDetails(u string) (bool, uint32, error) {
+func getRangeDetails(u string) (bool, int64, error) {
 
 	request, err := http.NewRequest("HEAD", u, strings.NewReader(""))
 	if err != nil {
@@ -294,7 +294,7 @@ func getRangeDetails(u string) (bool, uint32, error) {
 
 	conLen := headers.Get("Content-Length")
 
-	cl, err := parseUint32(conLen)
+	cl, err := parseint64(conLen)
 	if err != nil {
 		return false, 0, fmt.Errorf("Error Parsing content length : %v", err)
 	}
@@ -331,12 +331,14 @@ func doAPICall(request *http.Request) (int, http.Header, []byte, error) {
 }
 
 //getDataAndWriteToFile will get the response and write to file
-func (sum *summon) getDataAndWriteToFile(body io.ReadCloser, f io.Writer, index uint32) error {
+func (sum *summon) getDataAndWriteToFile(body io.ReadCloser, f io.Writer, index int64) error {
 
 	defer body.Close()
 
 	//we make buffer of 500 bytes and try to read 500 bytes every iteration.
 	var buf = make([]byte, 500)
+
+	defer startTimer("Time took for chunk : %v is", index)()
 
 	for {
 		select {
@@ -355,21 +357,21 @@ func (sum *summon) getDataAndWriteToFile(body io.ReadCloser, f io.Writer, index 
 	}
 }
 
-func (sum *summon) readBody(body io.Reader, f io.Writer, buf []byte, index uint32) error {
+func (sum *summon) readBody(body io.Reader, f io.Writer, buf []byte, index int64) error {
 
 	r, err := body.Read(buf)
 
 	if r > 0 {
 		f.Write(buf[:r])
+
+		sum.progressBar.Lock()
+		sum.progressBar.p[index].curr += int64(r)
+		sum.progressBar.Unlock()
 	}
 
 	if err != nil {
 		return err
 	}
-
-	sum.progressBar.Lock()
-	sum.progressBar.p[index].curr += uint32(r)
-	sum.progressBar.Unlock()
 
 	return nil
 }

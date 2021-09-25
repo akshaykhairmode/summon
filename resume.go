@@ -9,15 +9,15 @@ import (
 )
 
 type resume struct {
-	downloaded   uint32
-	start        uint32
-	end          uint32
+	downloaded   int64
+	start        int64
+	end          int64
 	tempFilePath string
 }
 
 type meta struct {
-	ChunkPaths map[uint32]string   `json:"chunkPaths"` //Key is index & value is absolute path of chunk
-	Range      map[uint32][]uint32 `json:"range"`      //Key is index & value is the initial range which was used. 0 being start and 1 being the end
+	ChunkPaths map[int64]string  `json:"chunkPaths"` //Key is index & value is absolute path of chunk
+	Range      map[int64][]int64 `json:"range"`      //Key is index & value is the initial range which was used. 0 being start and 1 being the end
 }
 
 //getMetaData will read the meta file and return the meta struct
@@ -78,7 +78,7 @@ func (sum *summon) canBeResumed(fpath string) (bool, []string) {
 		contentL := finfo.Size()
 
 		sum.fileDetails.chunks[index] = nil
-		sum.fileDetails.resume[index] = resume{downloaded: uint32(contentL), end: end, start: start, tempFilePath: filePath}
+		sum.fileDetails.resume[index] = resume{downloaded: int64(contentL), end: end, start: start, tempFilePath: filePath}
 	}
 
 	return true, parts
@@ -88,7 +88,7 @@ func (sum *summon) resumeDownload(wg *sync.WaitGroup) error {
 
 	for index := range sum.fileDetails.chunks {
 
-		var start, end, total uint32
+		var start, end, total int64
 
 		//The previous start range + the bytes we have downloaded will give us the new range
 		start = sum.fileDetails.resume[index].start + sum.fileDetails.resume[index].downloaded
@@ -126,11 +126,11 @@ func (sum *summon) resumeDownload(wg *sync.WaitGroup) error {
 
 func (sum *summon) download(wg *sync.WaitGroup) error {
 
-	index := uint32(0)
+	index := int64(0)
 	split := sum.fileDetails.contentLength / sum.concurrency
-	meta := meta{ChunkPaths: make(map[uint32]string), Range: make(map[uint32][]uint32)}
+	meta := meta{ChunkPaths: make(map[int64]string), Range: make(map[int64][]int64)}
 
-	for start := uint32(0); start < sum.fileDetails.contentLength; start += split + 1 {
+	for start := int64(0); start < sum.fileDetails.contentLength; start += split + 1 {
 		end := start + split
 		if end > sum.fileDetails.contentLength {
 			end = sum.fileDetails.contentLength
@@ -150,7 +150,7 @@ func (sum *summon) download(wg *sync.WaitGroup) error {
 
 		//Set metadata
 		meta.ChunkPaths[index] = f.Name()
-		meta.Range[index] = []uint32{start, end}
+		meta.Range[index] = []int64{start, end}
 
 		//init progressbar
 		sum.progressBar.p[index] = &progress{curr: 0, total: end - start}
@@ -186,7 +186,7 @@ func (sum *summon) download(wg *sync.WaitGroup) error {
 }
 
 //deleteFiles deletes the list of files provided
-func (sum *summon) deleteFiles(chunks map[uint32]*os.File, tempFileName ...string) error {
+func (sum *summon) deleteFiles(chunks map[int64]*os.File, tempFileName ...string) error {
 
 	for _, handle := range chunks {
 		if handle == nil {
@@ -228,10 +228,10 @@ func (sum *summon) createTempOutputFile() error {
 
 		if shouldResume == "Y" {
 			sum.isResume = true
-			sum.concurrency = uint32(len(sum.fileDetails.chunks))
+			sum.concurrency = int64(len(sum.fileDetails.chunks))
 		} else {
 			//Delete Temp file and chunks both
-			if err := sum.deleteFiles(map[uint32]*os.File{}, append(parts, tempOutFileName, sum.getMetaFileName())...); err != nil {
+			if err := sum.deleteFiles(map[int64]*os.File{}, append(parts, tempOutFileName, sum.getMetaFileName())...); err != nil {
 				return err
 			}
 		}

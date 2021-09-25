@@ -4,14 +4,16 @@ import (
 	"bytes"
 	"encoding/base64"
 	"flag"
+	"fmt"
 	"io"
 	"log"
 	"os"
 	"strconv"
+	"time"
 )
 
 type arguments struct {
-	connections uint32
+	connections int64
 	help        bool
 	outputFile  string
 	verbose     bool
@@ -37,7 +39,7 @@ func parseFlags(args *arguments) {
 	flag.StringVar(&args.outputFile, "o", "", "output path of downloaded file, default is same directory.")
 	flag.Parse()
 
-	args.connections = uint32(c)
+	args.connections = int64(c)
 
 }
 
@@ -67,11 +69,11 @@ func decode(b []byte) ([]byte, error) {
 	return out[:n], nil
 }
 
-func parseUint32(s ...string) ([]uint32, error) {
+func parseint64(s ...string) ([]int64, error) {
 
 	var err error
 	var r uint64
-	var ret []uint32
+	var ret []int64
 
 	for _, v := range s {
 		r, err = strconv.ParseUint(v, 10, 32)
@@ -79,8 +81,16 @@ func parseUint32(s ...string) ([]uint32, error) {
 			log.Println(err)
 			return ret, err
 		}
-		ret = append(ret, uint32(r))
+		ret = append(ret, int64(r))
 	}
 
 	return ret, nil
+}
+
+func startTimer(s string, args ...interface{}) func() {
+	startTime := time.Now()
+	str := fmt.Sprintf(s, args...)
+	return func() {
+		LogWriter.Printf(str+" %v", time.Since(startTime))
+	}
 }
