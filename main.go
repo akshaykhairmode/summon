@@ -67,13 +67,13 @@ func (sum *summon) run() error {
 
 	if err == nil {
 		LogWriter.Printf("Success, Now Cleaning Up")
-		return sum.deleteFiles(sum.fileDetails.chunks, sum.getMetaFileName())
+		return deleteFiles(sum.fileDetails.chunks, sum.getMetaFileName())
 	}
 
 	//if there was some error we will delete the files except unless its gracefully stopped
 	if err != ErrGracefulShutdown {
 		LogWriter.Printf("Some error occured Cleaning Up, Error : %v", err)
-		return sum.deleteFiles(sum.fileDetails.chunks, sum.fileDetails.tempOutFile.Name(), sum.getMetaFileName())
+		return deleteFiles(sum.fileDetails.chunks, sum.fileDetails.tempOutFile.Name(), sum.getMetaFileName())
 	}
 
 	return nil

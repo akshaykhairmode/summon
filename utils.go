@@ -31,15 +31,11 @@ func fileExists(fname string) bool {
 
 func parseFlags(args *arguments) {
 
-	var c uint64
-
-	flag.Uint64Var(&c, "c", 0, "number of concurrent connections")
+	flag.Int64Var(&args.connections, "c", 0, "number of concurrent connections")
 	flag.BoolVar(&args.help, "h", false, "displays available flags")
 	flag.BoolVar(&args.verbose, "v", false, "enables debug logs")
 	flag.StringVar(&args.outputFile, "o", "", "output path of downloaded file, default is same directory.")
 	flag.Parse()
-
-	args.connections = int64(c)
 
 }
 

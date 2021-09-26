@@ -194,7 +194,7 @@ func (sum summon) addMetadataToFile(m meta) {
 }
 
 //deleteFiles deletes the list of files provided
-func (sum *summon) deleteFiles(chunks map[int64]*os.File, tempFileName ...string) error {
+func deleteFiles(chunks map[int64]*os.File, tempFileName ...string) error {
 
 	for _, handle := range chunks {
 		if handle == nil {
@@ -239,7 +239,7 @@ func (sum *summon) createTempOutputFile() error {
 			sum.concurrency = int64(len(sum.fileDetails.chunks))
 		} else {
 			//Delete Temp file and chunks both
-			if err := sum.deleteFiles(map[int64]*os.File{}, append(parts, tempOutFileName, sum.getMetaFileName())...); err != nil {
+			if err := deleteFiles(map[int64]*os.File{}, append(parts, tempOutFileName, sum.getMetaFileName())...); err != nil {
 				return err
 			}
 		}
