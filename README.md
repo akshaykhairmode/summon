@@ -4,7 +4,7 @@ Simple go tool to download file with multiple connections. Currently supports li
 
 **Requirements** - Go must be installed. go v1.6 and greater required. Download From https://golang.org/doc/install
 
-**To install**, simply use  `go get github.com/akshaykhairmode/summon`
+**To install**, simply use  `go get github.com/akshaykhairmode/summon` or `go install github.com/akshaykhairmode/summon@latest`
 
 This will install go binary in your $GOBIN (If its set) or at ~/go/bin/summon
 
