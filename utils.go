@@ -7,8 +7,12 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"math"
 	"os"
+	"os/exec"
+	"runtime"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -88,5 +92,36 @@ func startTimer(s string, args ...interface{}) func() {
 	str := fmt.Sprintf(s, args...)
 	return func() {
 		LogWriter.Printf(str+" %v", time.Since(startTime))
+	}
+}
+
+func getProgressSize() int {
+	cmd := exec.Command("stty", "size")
+	cmd.Stdin = os.Stdin
+	out, err := cmd.Output()
+
+	if err != nil {
+		LogWriter.Printf("error occured while size command : %v", err)
+		return DEFAULT_PROGRESS_SIZE
+	}
+
+	data := strings.Split(strings.TrimRight(string(out), "\n"), " ")
+	if len(data) < 1 {
+		return DEFAULT_PROGRESS_SIZE
+	}
+
+	i, err := strconv.Atoi(data[1])
+	if err != nil {
+		LogWriter.Printf("error occured while converting str to int : %v", err)
+		return DEFAULT_PROGRESS_SIZE
+	}
+
+	//35 percent of the available terminal size
+	return int(math.Round(0.35 * float64(i)))
+}
+
+func printWarnings() {
+	if runtime.GOOS == "windows" {
+		log.Println("WARNING: It may not work as expected on windows")
 	}
 }

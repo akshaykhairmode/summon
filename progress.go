@@ -18,6 +18,8 @@ type progress struct {
 	total int64 //total bytes which we are supposed to read
 }
 
+var progressSize int
+
 func (sum *summon) startProgressBar(wg *sync.WaitGroup, stop chan struct{}) {
 
 	defer wg.Done()
@@ -61,10 +63,10 @@ func printProgress(index int64, p progress) {
 
 	percent := math.Round((float64(p.curr) / float64(p.total)) * 100)
 
-	n := int((percent / 100) * PROGRESS_SIZE)
+	n := int((percent / 100) * float64(progressSize))
 
 	s.WriteString("[")
-	for i := 0; i < PROGRESS_SIZE; i++ {
+	for i := 0; i < progressSize; i++ {
 		if i <= n {
 			s.WriteString(">")
 		} else {

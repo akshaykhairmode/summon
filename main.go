@@ -12,9 +12,9 @@ import (
 )
 
 const (
-	MAX_CONN      = 20
-	DEFAULT_CONN  = 4
-	PROGRESS_SIZE = 30
+	MAX_CONN              = 20
+	DEFAULT_CONN          = 4
+	DEFAULT_PROGRESS_SIZE = 30
 )
 
 func init() {
@@ -22,9 +22,11 @@ func init() {
 	flag.CommandLine.SetOutput(os.Stdout)
 }
 
-var ErrGracefulShutdown = errors.New("Got Stop Signal")
+var ErrGracefulShutdown = errors.New("got stop signal")
 
 func main() {
+
+	printWarnings()
 
 	defer recoverMain()
 

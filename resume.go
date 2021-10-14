@@ -221,7 +221,7 @@ func (sum *summon) createTempOutputFile() error {
 
 	//Check if file already exists with same name
 	if fileExists(sum.fileDetails.absolutePath) {
-		return fmt.Errorf("File : %v already exists", sum.fileDetails.absolutePath)
+		return fmt.Errorf("file : %v already exists", sum.fileDetails.absolutePath)
 	}
 
 	tempOutFileName := sum.fileDetails.fileDir + sum.separator + "." + sum.fileDetails.fileName
@@ -247,7 +247,7 @@ func (sum *summon) createTempOutputFile() error {
 
 	out, err := os.OpenFile(tempOutFileName, os.O_CREATE|os.O_RDWR|os.O_APPEND, 0644)
 	if err != nil {
-		return fmt.Errorf("Error while creating file : %v", err)
+		return fmt.Errorf("error while creating file : %v", err)
 	}
 
 	sum.fileDetails.tempOutFile = out

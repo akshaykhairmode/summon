@@ -90,13 +90,13 @@ func NewSummon() (*summon, error) {
 
 func validate() (string, error) {
 	if len(flag.Args()) <= 0 {
-		return "", fmt.Errorf("Please pass file url")
+		return "", fmt.Errorf("please pass file url")
 	}
 
 	u := flag.Args()[0]
 	uri, err := url.ParseRequestURI(u)
 	if err != nil {
-		return "", fmt.Errorf("Passed URL is invalid")
+		return "", fmt.Errorf("passed URL is invalid")
 	}
 
 	return uri.String(), nil
@@ -104,6 +104,8 @@ func validate() (string, error) {
 
 //process is the manager method
 func (sum *summon) process() error {
+
+	progressSize = getProgressSize()
 
 	//pwg is the progressbar waitgroup
 	wg, pWg := &sync.WaitGroup{}, &sync.WaitGroup{}
@@ -223,7 +225,7 @@ func (sum *summon) combineChunks() error {
 		handle := sum.fileDetails.chunks[i]
 
 		if handle == nil {
-			return fmt.Errorf("Got chunk handle nil")
+			return fmt.Errorf("got chunk handle nil")
 		}
 
 		handle.Seek(0, 0) //We need to seek because read and write cursor are same and the cursor would be at the end.
@@ -278,7 +280,7 @@ func (sum *summon) downloadFileForRange(wg *sync.WaitGroup, r string, index int6
 	//206 = Partial Content
 	if response.StatusCode != 200 && response.StatusCode != 206 {
 		sum.Lock()
-		sum.err = fmt.Errorf("Did not get 20X status code, got : %v", response.StatusCode)
+		sum.err = fmt.Errorf("did not get 20X status code, got : %v", response.StatusCode)
 		sum.Unlock()
 		log.Println(sum.err)
 		return
@@ -298,23 +300,23 @@ func getRangeDetails(u string) (bool, int64, error) {
 
 	request, err := http.NewRequest("HEAD", u, strings.NewReader(""))
 	if err != nil {
-		return false, 0, fmt.Errorf("Error while creating request : %v", err)
+		return false, 0, fmt.Errorf("error while creating request : %v", err)
 	}
 
 	sc, headers, _, err := doAPICall(request)
 	if err != nil {
-		return false, 0, fmt.Errorf("Error calling url : %v", err)
+		return false, 0, fmt.Errorf("error calling url : %v", err)
 	}
 
 	if sc != 200 && sc != 206 {
-		return false, 0, fmt.Errorf("Did not get 200 or 206 response")
+		return false, 0, fmt.Errorf("did not get 200 or 206 response")
 	}
 
 	conLen := headers.Get("Content-Length")
 
 	cl, err := parseint64(conLen)
 	if err != nil {
-		return false, 0, fmt.Errorf("Error Parsing content length : %v", err)
+		return false, 0, fmt.Errorf("error Parsing content length : %v", err)
 	}
 
 	//Accept-Ranges: bytes
@@ -335,13 +337,13 @@ func doAPICall(request *http.Request) (int, http.Header, []byte, error) {
 
 	response, err := client.Do(request)
 	if err != nil {
-		return 0, http.Header{}, []byte{}, fmt.Errorf("Error while doing request : %v", err)
+		return 0, http.Header{}, []byte{}, fmt.Errorf("error while doing request : %v", err)
 	}
 	defer response.Body.Close()
 
 	data, err := ioutil.ReadAll(response.Body)
 	if err != nil {
-		return 0, http.Header{}, []byte{}, fmt.Errorf("Error while reading response body : %v", err)
+		return 0, http.Header{}, []byte{}, fmt.Errorf("error while reading response body : %v", err)
 	}
 
 	return response.StatusCode, response.Header, data, nil
@@ -361,7 +363,7 @@ func getFileNameFromHeaders(u string) (string, error) {
 	}
 
 	if sc != 200 {
-		return "", fmt.Errorf("Did not get 200 response in getFileNameFromHeaders : %v", sc)
+		return "", fmt.Errorf("did not get 200 response in getFileNameFromHeaders : %v", sc)
 	}
 
 	cd := headers.Get("Content-Disposition")
