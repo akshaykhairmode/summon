@@ -62,7 +62,7 @@ func (sum *summon) run() error {
 	}
 
 	log.Printf("Multiple Connections Supported : %v", isSupported)
-	log.Printf("Got Content Length : %v", contentLength)
+	log.Printf("Got Content Length : %v", humanSizeFromBytes(contentLength))
 	log.Printf("Using %v connections", sum.concurrency)
 
 	err = sum.process()

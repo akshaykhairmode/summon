@@ -240,7 +240,7 @@ func (sum *summon) combineChunks() error {
 
 	finalFileName := sum.fileDetails.fileDir + sum.separator + sum.fileDetails.fileName
 
-	log.Printf("Wrote to File : %v, Written bytes : %v", finalFileName, w)
+	log.Printf("Wrote to File : %v, Written : %v", finalFileName, humanSizeFromBytes(w))
 
 	LogWriter.Printf("Renaming File from : %v to %v", tempFileName, finalFileName)
 
