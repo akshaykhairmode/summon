@@ -15,11 +15,8 @@ This will install go binary in your $GOBIN (If its set) or at ~/go/bin/summon
 **Flags Available**
 
       -c int
-    	    number of concurrent connections
+    	      number of concurrent connections
       -h    displays available flags
       -o string
             output path of downloaded file, default is same directory.
         
-
-
-If you want to learn step by step, click [here](https://www.abilityrush.com/download-file-concurrently-in-golang-part-1/)
